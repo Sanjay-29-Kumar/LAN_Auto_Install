@@ -1,8 +1,6 @@
 # LANauto_install
 Automatically installs software on all LAN-connected devices with no user interaction required.
 
-Here’s a clean and professional README.md you can use for your GitHub repository:
-
 ---
 
 # LAN-Based Automatic Software Installation System
@@ -109,5 +107,3 @@ python app.py
 This project is licensed under the MIT License.
 
 ---
-
-Would you like me to export this as a downloadable file or push it into a GitHub repo for you?
