@@ -1,0 +1,2 @@
+Installed application .exe file is stored in this path of admin 
+which is later detected by selan at the time of installation 
