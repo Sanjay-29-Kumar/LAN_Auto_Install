@@ -1,0 +1,17 @@
+
+sendlan.py
+initial code
+
+receivelan.py
+initial code
+
+updated version of the code 
+--> connects sender and vm (in our case here)
+
+it needs to select the file to send and download install setup silently as client can use immmediately
+and acknowlege each time in sender machine like 
+->sent
+->installed 
+->set up completed 
+
+->if it is needed to be set up manually then acknowledge that too

@@ -1,37 +1,74 @@
-# receiver.py
+# relan2.py
 import socket
-import subprocess
 import os
+import subprocess
 
-HOST = '0.0.0.0'  # Listen on all interfaces
 PORT = 5001
-INSTALL_PATH = "C:\\Users\\Public\\Downloads\\received_installer.exe"
+BUFFER_SIZE = 65536
+SAVE_DIR = 'received_installers'
 
-def receive_file():
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind((HOST, PORT))
+os.makedirs(SAVE_DIR, exist_ok=True)
+
+def handle_client(conn, addr):
+    print(f"[+] Connected from {addr}")
+
+    # Receive header
+    header = conn.recv(1024).decode()
+    filename, filesize = header.split('|')
+    filesize = int(filesize)
+
+    conn.send(b'OK')  # Acknowledge
+
+    file_path = os.path.join(SAVE_DIR, filename)
+    with open(file_path, 'wb') as f:
+        received = 0
+        while received < filesize:
+            data = conn.recv(BUFFER_SIZE)
+            if not data:
+                break
+            f.write(data)
+            received += len(data)
+
+    print(f"📥 Received: {filename}")
+    status = run_installer(file_path)
+    conn.send(status.encode())  # Send status back
+
+def run_installer(file_path):
+    print("⚙️  Running installer silently...")
+
+    # Known silent flags
+    silent_flags = {
+        'exe': ["/S", "/silent", "/verysilent"],
+        'msi': ["/quiet", "/qn"]
+    }
+
+    ext = os.path.splitext(file_path)[1].lower().lstrip('.')
+    for flag in silent_flags.get(ext, []):
+        try:
+            subprocess.run([file_path, flag], check=True)
+            print(f"✅ Installed silently with: {flag}")
+            return "✅ Installed silently"
+        except subprocess.CalledProcessError:
+            continue
+
+    try:
+        subprocess.Popen([file_path])
+        print("⚠️ Launched installer (manual setup may be needed)")
+        return "⚠️ Launched setup manually"
+    except Exception as e:
+        print(f"❌ Installation failed: {e}")
+        return "❌ Installation failed"
+
+def start_receiver():
+    with socket.socket() as s:
+        s.bind(('', PORT))
         s.listen(1)
         print(f"[Receiver] Listening on port {PORT}...")
 
-        conn, addr = s.accept()
-        print(f"[Receiver] Connection from {addr}")
-        with conn, open(INSTALL_PATH, 'wb') as f:
-            while True:
-                data = conn.recv(4096)
-                if not data:
-                    break
-                f.write(data)
-
-        print(f"[Receiver] File saved to {INSTALL_PATH}")
-        run_silent(INSTALL_PATH)
-
-def run_silent(file_path):
-    try:
-        print("[Receiver] Running installer silently...")
-        subprocess.run([file_path, "/S"], check=True)
-        print("[Receiver] Installation completed.")
-    except Exception as e:
-        print(f"[Receiver] Installation failed: {e}")
+        while True:
+            conn, addr = s.accept()
+            with conn:
+                handle_client(conn, addr)
 
 if __name__ == "__main__":
-    receive_file()
+    start_receiver()
