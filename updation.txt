@@ -15,3 +15,6 @@ and acknowlege each time in sender machine like
 ->set up completed 
 
 ->if it is needed to be set up manually then acknowledge that too
+
+
+this will silently install no need setting up after installation
