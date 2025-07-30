@@ -1,0 +1,8 @@
+{
+  "client01": {
+    "name": "VM01",
+    "ip": "192.168.1.15",
+    "username": "ssk",
+    "password": "1937"
+  }
+}
