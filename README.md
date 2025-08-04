@@ -1,109 +1,64 @@
-# LANauto_install
-Automatically installs software on all LAN-connected devices with no user interaction required.
+# LAN File Transfer System
 
----
+A simple and reliable LAN-based file transfer system with automatic installer execution.
 
-# LAN-Based Automatic Software Installation System
+## Features
 
-Automatically installs software on all LAN-connected devices with no user interaction required. This system enables a central admin to deploy installation files to multiple machines on the same network and execute them silently using pre-configured agents.
+- **Auto-Discovery**: Clients automatically discover servers on the local network
+- **Binary-Safe Transfer**: Files transfer without corruption (PNG, EXE, etc.)
+- **Silent Installation**: EXE and MSI files automatically install after transfer
+- **Progress Tracking**: Real-time transfer progress feedback
+- **Multi-Client Support**: Server can handle multiple connected clients
 
----
+## Quick Start
 
-## 🔧 Features
+### 1. Run Server
+- Execute: `SimpleServer_BinaryFixed.exe`
+- Click "Start Server" button
+- Server will start on ports 5000 (TCP) and 5001 (UDP)
 
-* 🚀 One-click deployment from admin machine
-* 📦 Silent software installation on clients
-* 🔗 Auto-discovery of LAN-connected systems
-* 🔐 Secure file transfer and execution
-* 📝 Centralized logging of actions
+### 2. Run Client
+- Execute: `SimpleClient_ProtocolFixed.exe`
+- Client will automatically discover and show available servers
+- Click "Connect" to connect to a server
 
----
+### 3. Transfer Files
+- On server: Select file → Choose connected clients → Send
+- Files are saved to `received_files\` folder on client
+- EXE/MSI files automatically install silently
 
-## 🖥️ System Architecture
+## Technical Details
 
-* **Admin Server**
+- **Discovery Protocol**: UDP broadcast on port 5001
+- **File Transfer**: TCP on port 5000 with binary integrity
+- **Supported Installers**: .exe, .msi (with /S silent flag)
+- **Chunk Size**: 8192 bytes for optimal performance
+- **Timeout**: 30 seconds per operation
 
-  * Hosts installation files
-  * Sends commands and scripts to clients
-* **Client Agents**
-
-  * Continuously listen for instructions from the server
-  * Automatically download and install packages silently
-* **Communication**
-
-  * Local TCP socket or REST API
-  * Optional encryption and authentication
-
----
-
-## ⚙️ Tech Stack
-
-| Layer         | Technology                 |
-| ------------- | -------------------------- |
-| Backend       | Python (Flask or FastAPI)  |
-| Client Agent  | Python, Bash / PowerShell  |
-| UI (Optional) | React.js or CLI            |
-| File Transfer | HTTP / SCP / Socket        |
-| Security      | Token auth, checksums, TLS |
-
----
-
-## 📁 Project Structure (Sample)
+## Files Structure
 
 ```
-project/
-├── server/
-│   ├── app.py              # Admin control center
-│   ├── endpoints/          # API or socket handlers
-│   └── files/              # Software packages
-├── client/
-│   ├── agent.py            # Background agent script
-│   └── installer/          # Silent install logic
-└── README.md
+lan2/
+├── dist/
+│   ├── SimpleServer_BinaryFixed.exe    # Final server executable
+│   └── SimpleClient_ProtocolFixed.exe  # Final client executable
+├── simple_server_fixed.py              # Server source code
+├── simple_client.py                    # Client source code
+├── requirements.txt                    # Python dependencies
+└── README.md                          # This file
 ```
 
----
+## Requirements
 
-## 🛠️ Requirements
+- Windows 10/11
+- Local network connectivity
+- No additional dependencies (executables are standalone)
 
-* Python 3.x
-* LAN-connected systems
-* PowerShell (Windows) or Bash (Linux)
-* Admin access on all client machines
+## Troubleshooting
 
----
-
-## 🚀 Getting Started
-
-### 1. Run Admin Server:
-
-```bash
-cd server
-python app.py
-```
-
-### 2. Install Agent on Clients:
-
-* Place agent script on each machine
-* Run at startup or as a service
-
-### 3. Deploy Software:
-
-* Drop software in /files
-* Send install command via API or CLI
+- **No servers found**: Check firewall settings, ensure both devices on same network
+- **File corruption**: Use the latest executables with binary-safe protocol
+- **Installation fails**: Ensure installer supports /S silent flag
 
 ---
-
-## 🛡️ Security Tips
-
-* Use pre-shared tokens or API keys
-* Validate software with hashes (SHA256)
-* Optionally wrap traffic in TLS using stunnel or VPN
-
----
-
-## 📃 License
-
-This project is licensed under the MIT License.
-
----
+Built with Python 3.13 and PyQt5
