@@ -1,0 +1,55 @@
+modules = ["python-3.12"]
+run = "run"
+
+[nix]
+channel = "stable-25_05"
+packages = ["cargo", "libiconv", "libxcrypt", "openssl", "pkg-config", "rustc"]
+
+[deployment]
+run = ["sh", "-c", "run"]
+
+[workflows]
+runButton = "Run Server"
+
+[[workflows.workflow]]
+name = "Run Server"
+author = 39838853
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python server_web.py"
+
+[[workflows.workflow]]
+name = "Run Client"
+author = 39838853
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python client_web.py"
+
+[[workflows.workflow]]
+name = "Test Connection"
+author = 39838853
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python connection_tester.py"
+
+[[ports]]
+localPort = 3000
+externalPort = 3000
+
+[[ports]]
+localPort = 3001
+externalPort = 3001
+
+[[ports]]
+localPort = 3030
+externalPort = 3002
+
+[[ports]]
+localPort = 5000
+externalPort = 80

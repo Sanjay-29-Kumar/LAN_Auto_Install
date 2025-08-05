@@ -1,3 +1,4 @@
+
 import socket
 import os
 import hashlib
@@ -7,60 +8,73 @@ from typing import Dict, Any, Optional, Callable
 from .protocol import MessageType
 
 class FileTransfer:
-    def __init__(self, chunk_size: int = 8192):
+    def __init__(self, chunk_size: int = 65536):  # 64KB chunks for better performance
         self.chunk_size = chunk_size
         self.transfers: Dict[str, Dict[str, Any]] = {}
         self.transfer_callbacks: Dict[str, Callable] = {}
+        self.active_transfers = set()
         
     def start_file_transfer(self, file_path: str, target_ip: str, 
                           protocol, transfer_id: str = None) -> bool:
-        """Start a file transfer to a specific client"""
+        """Start a file transfer to a specific client with enhanced error handling"""
         if not os.path.exists(file_path):
+            print(f"❌ File not found: {file_path}")
             return False
             
         if transfer_id is None:
             transfer_id = f"{int(time.time())}_{os.path.basename(file_path)}"
             
-        file_size = os.path.getsize(file_path)
-        file_hash = self._calculate_file_hash(file_path)
-        
-        transfer_info = {
-            "file_path": file_path,
-            "file_name": os.path.basename(file_path),
-            "file_size": file_size,
-            "file_hash": file_hash,
-            "target_ip": target_ip,
-            "status": "initiating",
-            "progress": 0,
-            "start_time": time.time(),
-            "protocol": protocol
-        }
-        
-        self.transfers[transfer_id] = transfer_info
-        
-        # Send file transfer initiation message
-        message_data = {
-            "transfer_id": transfer_id,
-            "file_name": transfer_info["file_name"],
-            "file_size": file_size,
-            "file_hash": file_hash,
-            "is_installer": self._is_installer_file(file_path)
-        }
-        
-        success = protocol.send_to_client(target_ip, MessageType.FILE_TRANSFER, message_data)
-        
-        if success:
-            # Start transfer thread
-            threading.Thread(target=self._transfer_file, 
-                           args=(transfer_id,), 
-                           daemon=True).start()
-            return True
-        else:
-            del self.transfers[transfer_id]
+        try:
+            file_size = os.path.getsize(file_path)
+            file_hash = self._calculate_file_hash(file_path)
+            
+            transfer_info = {
+                "file_path": file_path,
+                "file_name": os.path.basename(file_path),
+                "file_size": file_size,
+                "file_hash": file_hash,
+                "target_ip": target_ip,
+                "status": "initiating",
+                "progress": 0,
+                "start_time": time.time(),
+                "protocol": protocol,
+                "bytes_sent": 0,
+                "chunks_sent": 0,
+                "retry_count": 0
+            }
+            
+            self.transfers[transfer_id] = transfer_info
+            self.active_transfers.add(transfer_id)
+            
+            # Send file transfer initiation message
+            message_data = {
+                "transfer_id": transfer_id,
+                "file_name": transfer_info["file_name"],
+                "file_size": file_size,
+                "file_hash": file_hash,
+                "is_installer": self._is_installer_file(file_path),
+                "chunk_size": self.chunk_size
+            }
+            
+            success = protocol.send_to_client(target_ip, MessageType.FILE_TRANSFER, message_data)
+            
+            if success:
+                # Start transfer thread
+                threading.Thread(target=self._transfer_file, 
+                               args=(transfer_id,), 
+                               daemon=True).start()
+                return True
+            else:
+                self._cleanup_transfer(transfer_id)
+                return False
+                
+        except Exception as e:
+            print(f"❌ Error starting transfer: {str(e)}")
+            self._cleanup_transfer(transfer_id)
             return False
     
     def _transfer_file(self, transfer_id: str):
-        """Transfer file in chunks"""
+        """Transfer file in chunks with enhanced error handling and retry logic"""
         transfer_info = self.transfers.get(transfer_id)
         if not transfer_info:
             return
@@ -72,67 +86,113 @@ class FileTransfer:
             file_size = transfer_info["file_size"]
             
             transfer_info["status"] = "transferring"
+            print(f"🚀 Starting file transfer: {os.path.basename(file_path)} → {target_ip} ({file_size} bytes)")
             
             with open(file_path, 'rb') as file:
                 bytes_sent = 0
                 chunk_number = 0
+                consecutive_failures = 0
+                last_progress_report = 0
                 
                 while bytes_sent < file_size:
                     chunk = file.read(self.chunk_size)
                     if not chunk:
                         break
-                        
-                    # Send chunk data
+                    
+                    # Send chunk data with retry logic
                     chunk_data = {
                         "transfer_id": transfer_id,
                         "chunk_number": chunk_number,
                         "chunk_data": chunk.hex(),
-                        "is_final": (bytes_sent + len(chunk)) >= file_size
+                        "is_final": (bytes_sent + len(chunk)) >= file_size,
+                        "chunk_size": len(chunk)
                     }
                     
                     success = protocol.send_to_client(target_ip, MessageType.FILE_TRANSFER, chunk_data)
                     
                     if not success:
-                        transfer_info["status"] = "failed"
-                        if transfer_id in self.transfer_callbacks:
-                            self.transfer_callbacks[transfer_id]("failed", 0)
-                        return
+                        consecutive_failures += 1
+                        print(f"⚠️ Failed to send chunk {chunk_number} to {target_ip} (attempt {consecutive_failures})")
+                        
+                        if consecutive_failures >= 5:
+                            print(f"❌ Too many consecutive failures, aborting transfer to {target_ip}")
+                            transfer_info["status"] = "failed"
+                            if transfer_id in self.transfer_callbacks:
+                                self.transfer_callbacks[transfer_id]("failed", 0)
+                            return
+                        
+                        # Wait and retry
+                        time.sleep(0.1)
+                        continue
                     
+                    consecutive_failures = 0
                     bytes_sent += len(chunk)
                     chunk_number += 1
+                    transfer_info["bytes_sent"] = bytes_sent
+                    transfer_info["chunks_sent"] = chunk_number
                     
-                    # Update progress
+                    # Update progress (report every 5% or every 10 chunks, whichever is less frequent)
                     progress = (bytes_sent / file_size) * 100
-                    transfer_info["progress"] = progress
+                    should_report = (progress - last_progress_report >= 5.0) or (chunk_number % 10 == 0) or (bytes_sent >= file_size)
                     
-                    if transfer_id in self.transfer_callbacks:
-                        self.transfer_callbacks[transfer_id]("progress", progress)
+                    if should_report:
+                        transfer_info["progress"] = progress
+                        print(f"📊 Transfer to {target_ip}: {progress:.1f}% ({bytes_sent}/{file_size} bytes) - Chunk {chunk_number}")
+                        
+                        if transfer_id in self.transfer_callbacks:
+                            self.transfer_callbacks[transfer_id]("progress", progress)
+                        
+                        last_progress_report = progress
                     
-                    time.sleep(0.01)  # Small delay to prevent overwhelming
+                    # Small delay for network stability
+                    if chunk_number % 50 == 0:  # Every 50 chunks
+                        time.sleep(0.001)
                 
                 transfer_info["status"] = "completed"
                 transfer_info["end_time"] = time.time()
+                transfer_duration = transfer_info["end_time"] - transfer_info["start_time"]
+                transfer_speed = file_size / transfer_duration if transfer_duration > 0 else 0
+                
+                print(f"✅ File transfer completed to {target_ip}: {os.path.basename(file_path)} "
+                      f"({file_size} bytes in {transfer_duration:.2f}s @ {transfer_speed/1024:.1f} KB/s)")
                 
                 if transfer_id in self.transfer_callbacks:
                     self.transfer_callbacks[transfer_id]("completed", 100)
                     
         except Exception as e:
-            print(f"Error transferring file {transfer_id}: {e}")
+            print(f"❌ Error transferring file {transfer_id}: {e}")
             transfer_info["status"] = "failed"
             if transfer_id in self.transfer_callbacks:
                 self.transfer_callbacks[transfer_id]("failed", 0)
+        finally:
+            self._cleanup_transfer(transfer_id)
+    
+    def _cleanup_transfer(self, transfer_id: str):
+        """Clean up transfer resources"""
+        self.active_transfers.discard(transfer_id)
     
     def _calculate_file_hash(self, file_path: str) -> str:
-        """Calculate SHA256 hash of file"""
+        """Calculate SHA256 hash of file with progress"""
         hash_sha256 = hashlib.sha256()
+        file_size = os.path.getsize(file_path)
+        bytes_read = 0
+        
         with open(file_path, "rb") as f:
-            for chunk in iter(lambda: f.read(4096), b""):
+            for chunk in iter(lambda: f.read(8192), b""):
                 hash_sha256.update(chunk)
+                bytes_read += len(chunk)
+                
+                # Print progress for large files
+                if file_size > 50 * 1024 * 1024:  # > 50MB
+                    if bytes_read % (10 * 1024 * 1024) == 0:  # Every 10MB
+                        progress = (bytes_read / file_size) * 100
+                        print(f"🔍 Calculating hash: {progress:.1f}%")
+        
         return hash_sha256.hexdigest()
     
     def _is_installer_file(self, file_path: str) -> bool:
         """Check if file is an installer"""
-        installer_extensions = ['.exe', '.msi', '.msix', '.appx']
+        installer_extensions = ['.exe', '.msi', '.msix', '.appx', '.deb', '.rpm', '.dmg', '.pkg']
         file_ext = os.path.splitext(file_path)[1].lower()
         return file_ext in installer_extensions
     
@@ -144,12 +204,17 @@ class FileTransfer:
         """Get status of a transfer"""
         return self.transfers.get(transfer_id)
     
+    def get_active_transfers(self) -> Dict[str, Dict[str, Any]]:
+        """Get all active transfers"""
+        return {tid: info for tid, info in self.transfers.items() if tid in self.active_transfers}
+    
     def cancel_transfer(self, transfer_id: str):
         """Cancel an ongoing transfer"""
         if transfer_id in self.transfers:
             self.transfers[transfer_id]["status"] = "cancelled"
             if transfer_id in self.transfer_callbacks:
                 self.transfer_callbacks[transfer_id]("cancelled", 0)
+            self._cleanup_transfer(transfer_id)
 
 class FileReceiver:
     def __init__(self, base_dir: str = "received_files"):
@@ -157,20 +222,27 @@ class FileReceiver:
         self.receiving_files: Dict[str, Dict[str, Any]] = {}
         self.receive_callbacks: Dict[str, Callable] = {}
         
-        # Create base directory
+        # Create base directory structure
         os.makedirs(base_dir, exist_ok=True)
+        os.makedirs(os.path.join(base_dir, "installers"), exist_ok=True)
+        os.makedirs(os.path.join(base_dir, "files"), exist_ok=True)
     
     def handle_file_transfer_init(self, data: Dict[str, Any], protocol) -> bool:
-        """Handle file transfer initiation from server"""
+        """Handle file transfer initiation from server with enhanced validation"""
         transfer_id = data.get("transfer_id")
         file_name = data.get("file_name")
         file_size = data.get("file_size")
         file_hash = data.get("file_hash")
         is_installer = data.get("is_installer", False)
         
+        if not all([transfer_id, file_name, file_size, file_hash]):
+            print("❌ Invalid file transfer initialization data")
+            return False
+        
         # Create unique filename to avoid conflicts
         timestamp = int(time.time())
-        unique_filename = f"{timestamp}_{file_name}"
+        safe_filename = self._sanitize_filename(file_name)
+        unique_filename = f"{timestamp}_{safe_filename}"
         
         # Determine storage directory
         if is_installer:
@@ -178,7 +250,6 @@ class FileReceiver:
         else:
             storage_dir = os.path.join(self.base_dir, "files")
         
-        os.makedirs(storage_dir, exist_ok=True)
         file_path = os.path.join(storage_dir, unique_filename)
         
         receive_info = {
@@ -191,10 +262,14 @@ class FileReceiver:
             "progress": 0,
             "start_time": time.time(),
             "chunks_received": 0,
-            "bytes_received": 0
+            "bytes_received": 0,
+            "expected_chunks": (file_size + 65535) // 65536,  # Rough estimate
+            "last_chunk_time": time.time()
         }
         
         self.receiving_files[transfer_id] = receive_info
+        
+        print(f"📥 Preparing to receive: {file_name} ({file_size} bytes) → {file_path}")
         
         # Send acknowledgment
         ack_data = {
@@ -206,7 +281,7 @@ class FileReceiver:
         return True
     
     def handle_file_chunk(self, data: Dict[str, Any], protocol) -> bool:
-        """Handle incoming file chunk"""
+        """Handle incoming file chunk with enhanced error checking"""
         transfer_id = data.get("transfer_id")
         chunk_number = data.get("chunk_number")
         chunk_data_hex = data.get("chunk_data")
@@ -214,6 +289,7 @@ class FileReceiver:
         
         receive_info = self.receiving_files.get(transfer_id)
         if not receive_info:
+            print(f"❌ Unknown transfer ID: {transfer_id}")
             return False
         
         try:
@@ -227,10 +303,15 @@ class FileReceiver:
             
             receive_info["bytes_received"] += len(chunk_data)
             receive_info["chunks_received"] += 1
+            receive_info["last_chunk_time"] = time.time()
             
             # Calculate progress
             progress = (receive_info["bytes_received"] / receive_info["file_size"]) * 100
             receive_info["progress"] = progress
+            
+            # Report progress periodically
+            if chunk_number % 20 == 0 or is_final:
+                print(f"📊 Receiving {receive_info['file_name']}: {progress:.1f}% (chunk {chunk_number})")
             
             # Send chunk acknowledgment
             ack_data = {
@@ -244,22 +325,48 @@ class FileReceiver:
                 self.receive_callbacks[transfer_id]("progress", progress)
             
             if is_final:
-                # Verify file hash
-                if self._verify_file_hash(receive_info["file_path"], receive_info["file_hash"]):
-                    receive_info["status"] = "completed"
-                    receive_info["end_time"] = time.time()
-                    
-                    if transfer_id in self.receive_callbacks:
-                        self.receive_callbacks[transfer_id]("completed", 100)
-                else:
-                    receive_info["status"] = "hash_mismatch"
-                    if transfer_id in self.receive_callbacks:
-                        self.receive_callbacks[transfer_id]("hash_mismatch", 0)
+                return self._finalize_file_transfer(transfer_id)
             
             return True
             
         except Exception as e:
-            print(f"Error handling file chunk: {e}")
+            print(f"❌ Error handling file chunk: {e}")
+            receive_info["status"] = "failed"
+            if transfer_id in self.receive_callbacks:
+                self.receive_callbacks[transfer_id]("failed", 0)
+            return False
+    
+    def _finalize_file_transfer(self, transfer_id: str) -> bool:
+        """Finalize file transfer with hash verification"""
+        receive_info = self.receiving_files.get(transfer_id)
+        if not receive_info:
+            return False
+        
+        try:
+            # Verify file hash
+            if self._verify_file_hash(receive_info["file_path"], receive_info["file_hash"]):
+                receive_info["status"] = "completed"
+                receive_info["end_time"] = time.time()
+                
+                transfer_duration = receive_info["end_time"] - receive_info["start_time"]
+                transfer_speed = receive_info["file_size"] / transfer_duration if transfer_duration > 0 else 0
+                
+                print(f"✅ File received successfully: {receive_info['file_name']} "
+                      f"({receive_info['file_size']} bytes in {transfer_duration:.2f}s @ {transfer_speed/1024:.1f} KB/s)")
+                
+                if transfer_id in self.receive_callbacks:
+                    self.receive_callbacks[transfer_id]("completed", 100)
+                
+                return True
+            else:
+                print(f"❌ Hash verification failed for {receive_info['file_name']}")
+                receive_info["status"] = "hash_mismatch"
+                if transfer_id in self.receive_callbacks:
+                    self.receive_callbacks[transfer_id]("hash_mismatch", 0)
+                return False
+                
+        except Exception as e:
+            print(f"❌ Error finalizing transfer: {e}")
             receive_info["status"] = "failed"
             if transfer_id in self.receive_callbacks:
                 self.receive_callbacks[transfer_id]("failed", 0)
@@ -270,12 +377,24 @@ class FileReceiver:
         try:
             hash_sha256 = hashlib.sha256()
             with open(file_path, "rb") as f:
-                for chunk in iter(lambda: f.read(4096), b""):
+                for chunk in iter(lambda: f.read(8192), b""):
                     hash_sha256.update(chunk)
             actual_hash = hash_sha256.hexdigest()
             return actual_hash == expected_hash
-        except:
+        except Exception as e:
+            print(f"❌ Hash verification error: {e}")
             return False
+    
+    def _sanitize_filename(self, filename: str) -> str:
+        """Sanitize filename for safe storage"""
+        import re
+        # Remove or replace unsafe characters
+        safe_name = re.sub(r'[<>:"/\\|?*]', '_', filename)
+        # Limit length
+        if len(safe_name) > 200:
+            name, ext = os.path.splitext(safe_name)
+            safe_name = name[:200-len(ext)] + ext
+        return safe_name
     
     def register_receive_callback(self, transfer_id: str, callback: Callable):
         """Register callback for receive status updates"""
@@ -286,15 +405,23 @@ class FileReceiver:
         return self.receiving_files.get(transfer_id)
     
     def get_received_files(self) -> list:
-        """Get list of all received files"""
+        """Get list of all received files with enhanced info"""
         files = []
         for root, dirs, filenames in os.walk(self.base_dir):
             for filename in filenames:
                 file_path = os.path.join(root, filename)
-                files.append({
-                    "path": file_path,
-                    "name": filename,
-                    "size": os.path.getsize(file_path),
-                    "type": "installer" if "installers" in file_path else "file"
-                })
-        return files 
+                try:
+                    stat = os.stat(file_path)
+                    files.append({
+                        "path": file_path,
+                        "name": filename,
+                        "size": stat.st_size,
+                        "type": "installer" if "installers" in file_path else "file",
+                        "modified": stat.st_mtime
+                    })
+                except:
+                    continue
+        
+        # Sort by modification time (newest first)
+        files.sort(key=lambda x: x['modified'], reverse=True)
+        return files

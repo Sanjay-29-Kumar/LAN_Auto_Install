@@ -1,16 +1,17 @@
+
 import socket
 import threading
 import time
 import subprocess
 import platform
-import psutil
+import concurrent.futures
 from typing import List, Dict, Optional
 import re
+import json
 
 def get_local_ip() -> str:
     """Get the local IP address of this machine"""
     try:
-        # Use socket to get local IP
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
         local_ip = s.getsockname()[0]
@@ -21,17 +22,15 @@ def get_local_ip() -> str:
         return "127.0.0.1"
 
 class NetworkDevice:
-    def __init__(self, ip: str, hostname: str = "", os_type: str = "Unknown", is_windows: bool = False):
+    def __init__(self, ip: str, hostname: str = "", is_server: bool = False, response_time: float = 0.0):
         self.ip = ip
         self.hostname = hostname
-        self.os_type = os_type
-        self.is_windows = is_windows
-        self.is_online = True
+        self.is_server = is_server
+        self.response_time = response_time
         self.last_seen = time.time()
-        self.ports = []
         
     def __repr__(self):
-        return f"NetworkDevice(ip={self.ip}, hostname={self.hostname}, os={self.os_type}, windows={self.is_windows})"
+        return f"NetworkDevice(ip={self.ip}, hostname={self.hostname}, server={self.is_server})"
 
 class NetworkDiscovery:
     def __init__(self, port: int = 5000):
@@ -51,111 +50,148 @@ class NetworkDiscovery:
         base_ip = '.'.join(local_ip.split('.')[:-1])
         return [f"{base_ip}.{i}" for i in range(1, 255)]
     
-    def ping_host(self, ip: str) -> bool:
-        """Ping a host to check if it's online"""
+    def quick_ping(self, ip: str) -> bool:
+        """Fast ping check with very short timeout"""
         try:
             if platform.system().lower() == "windows":
-                result = subprocess.run(['ping', '-n', '1', '-w', '1000', ip], 
-                                      capture_output=True, text=True, timeout=2)
+                result = subprocess.run(['ping', '-n', '1', '-w', '100', ip], 
+                                      capture_output=True, text=True, timeout=0.2)
             else:
                 result = subprocess.run(['ping', '-c', '1', '-W', '1', ip], 
-                                      capture_output=True, text=True, timeout=2)
+                                      capture_output=True, text=True, timeout=0.2)
             return result.returncode == 0
         except:
             return False
     
-    def get_hostname(self, ip: str) -> str:
-        """Get hostname for an IP address"""
+    def check_server_port(self, ip: str) -> tuple:
+        """Check if device has our server running with proper handshake"""
         try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(0.2)  # Very fast timeout
+            start_time = time.time()
+            result = sock.connect_ex((ip, self.port))
+            
+            if result == 0:
+                try:
+                    # Send a quick discovery message
+                    discovery_msg = {
+                        "type": "discovery",
+                        "data": {"client_ip": self.get_local_ip()},
+                        "timestamp": time.time()
+                    }
+                    
+                    msg_bytes = json.dumps(discovery_msg).encode('utf-8')
+                    msg_length = len(msg_bytes).to_bytes(4, 'big')
+                    sock.send(msg_length + msg_bytes)
+                    
+                    # Try to receive response
+                    sock.settimeout(0.3)
+                    resp_length_bytes = sock.recv(4)
+                    if len(resp_length_bytes) == 4:
+                        resp_length = int.from_bytes(resp_length_bytes, 'big')
+                        if resp_length < 1024:  # Reasonable response size
+                            resp_data = sock.recv(resp_length)
+                            response = json.loads(resp_data.decode('utf-8'))
+                            if response.get('type') == 'discovery_response':
+                                response_time = time.time() - start_time
+                                sock.close()
+                                return True, response_time
+                except:
+                    pass
+            
+            sock.close()
+            return False, 999
+        except:
+            return False, 999
+    
+    def get_hostname(self, ip: str) -> str:
+        """Get hostname for an IP address with fast timeout"""
+        try:
+            socket.settimeout(0.1)
             hostname = socket.gethostbyaddr(ip)[0]
             return hostname
         except:
-            return ""
+            return f"Device-{ip.split('.')[-1]}"
     
-    def detect_os(self, ip: str) -> str:
-        """Detect the operating system of a remote host"""
-        try:
-            # Try to connect to common ports to detect OS
-            common_ports = [22, 23, 80, 443, 3389, 135, 139, 445]
-            for port in common_ports:
-                try:
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(1)
-                    result = sock.connect_ex((ip, port))
-                    sock.close()
-                    if result == 0:
-                        # Port is open, try to get OS info
-                        if port in [135, 139, 445]:  # Windows-specific ports
-                            return "Windows"
-                        elif port == 22:  # SSH port
-                            return "Linux/Unix"
-                except:
-                    continue
-            return "Unknown"
-        except:
-            return "Unknown"
-    
-    def scan_network(self):
-        """Scan the network for devices"""
-        network_range = self.get_network_range()
+    def scan_single_ip(self, ip: str) -> Optional[NetworkDevice]:
+        """Scan a single IP address with optimized checks"""
         local_ip = self.get_local_ip()
-        
-        def scan_ip(ip):
-            if ip == local_ip:
-                return
-                
-            if self.ping_host(ip):
-                hostname = self.get_hostname(ip)
-                os_type = self.detect_os(ip)
-                is_windows = os_type == "Windows"
-                
-                device = NetworkDevice(ip, hostname, os_type, is_windows)
-                self.devices[ip] = device
-                
-                if self.callback:
-                    self.callback(device)
-        
-        # Use threading for faster scanning
-        threads = []
-        for ip in network_range:
-            thread = threading.Thread(target=scan_ip, args=(ip,))
-            thread.daemon = True
-            thread.start()
-            threads.append(thread)
+        # Allow same-machine discovery for testing
+        # if ip == local_ip:
+        #     return None
             
-            # Limit concurrent threads
-            if len(threads) >= 50:
-                for t in threads:
-                    t.join()
-                threads = []
+        # First check if server port is available (fastest way to find our servers)
+        is_server, response_time = self.check_server_port(ip)
         
-        # Wait for remaining threads
-        for t in threads:
-            t.join()
+        if is_server:
+            hostname = self.get_hostname(ip)
+            return NetworkDevice(ip, hostname, True, response_time)
+        
+        return None  # Skip non-server devices for faster discovery
+    
+    def fast_network_scan(self):
+        """Ultra-fast network scan focusing on servers only"""
+        network_range = self.get_network_range()
+        found_devices = []
+        
+        # Use ThreadPoolExecutor with higher concurrency for faster scanning
+        with concurrent.futures.ThreadPoolExecutor(max_workers=100) as executor:
+            future_to_ip = {executor.submit(self.scan_single_ip, ip): ip for ip in network_range}
+            
+            # Process results as they complete
+            for future in concurrent.futures.as_completed(future_to_ip, timeout=5):
+                try:
+                    device = future.result()
+                    if device:
+                        found_devices.append(device)
+                        self.devices[device.ip] = device
+                        
+                        if self.callback:
+                            self.callback(device)
+                        
+                        print(f"✓ Found server: {device.ip} ({device.hostname}) - {device.response_time:.3f}s")
+                except Exception as e:
+                    pass
+        
+        return found_devices
     
     def start_discovery(self, callback=None):
         """Start continuous network discovery"""
         self.callback = callback
         self.discovery_running = True
-        self.discovery_thread = threading.Thread(target=self._discovery_loop)
-        self.discovery_thread.daemon = True
+        self.discovery_thread = threading.Thread(target=self._discovery_loop, daemon=True)
         self.discovery_thread.start()
     
     def stop_discovery(self):
         """Stop network discovery"""
         self.discovery_running = False
         if self.discovery_thread:
-            self.discovery_thread.join()
+            self.discovery_thread.join(timeout=1)
     
     def _discovery_loop(self):
-        """Main discovery loop"""
+        """Main discovery loop with adaptive timing"""
         while self.discovery_running:
-            self.scan_network()
-            time.sleep(30)  # Rescan every 30 seconds
+            try:
+                print(f"🔍 Scanning network for servers...")
+                start_time = time.time()
+                found_devices = self.fast_network_scan()
+                scan_time = time.time() - start_time
+                
+                print(f"🔍 Network scan completed in {scan_time:.2f}s - Found {len(found_devices)} servers")
+                
+                # Adaptive sleep - scan more frequently if servers found
+                if found_devices:
+                    time.sleep(15)  # Scan every 15s when servers are present
+                else:
+                    time.sleep(30)  # Scan every 30s when no servers found
+                    
+            except Exception as e:
+                print(f"Discovery error: {e}")
+                time.sleep(10)
     
-    def get_windows_devices(self) -> List[NetworkDevice]:
-        """Get only Windows devices"""
-        return [device for device in self.devices.values() if device.is_windows]
+    def get_server_devices(self) -> List[NetworkDevice]:
+        """Get only devices running our server"""
+        return [device for device in self.devices.values() if device.is_server]
     
     def get_all_devices(self) -> List[NetworkDevice]:
         """Get all discovered devices"""
@@ -163,4 +199,14 @@ class NetworkDiscovery:
     
     def get_device_by_ip(self, ip: str) -> Optional[NetworkDevice]:
         """Get a specific device by IP"""
-        return self.devices.get(ip) 
+        return self.devices.get(ip)
+    
+    def refresh_device_status(self, ip: str) -> bool:
+        """Refresh status of a specific device"""
+        device = self.scan_single_ip(ip)
+        if device:
+            self.devices[ip] = device
+            return True
+        elif ip in self.devices:
+            del self.devices[ip]
+        return False

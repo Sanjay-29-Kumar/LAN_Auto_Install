@@ -1,246 +1,237 @@
 import sys
+import os
 import socket
 import threading
 import json
 import time
+import subprocess
 from pathlib import Path
-from typing import List, Dict, Any
-from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QPushButton, QLabel, QListWidget, QTextEdit, QListWidgetItem
-from PyQt5.QtCore import QThread, pyqtSignal, Qt
-from PyQt5.QtGui import QFont
+from typing import List, Dict, Any, Optional
+from PyQt5.QtWidgets import QApplication, QMainWindow, QMessageBox
+from PyQt5.QtCore import QThread, pyqtSignal, QTimer
 
-from network.discovery import NetworkDiscovery, Device
-from network.protocol import NetworkProtocol, MessageType
+from network.discovery import NetworkDiscovery, get_local_ip
+from network.protocol import ClientProtocol, MessageType
+from network.transfer import FileReceiver
 from ui.client_ui import ClientMainWindow
 
-class ClientController:
+class ClientController(QThread):
+    server_discovered = pyqtSignal(dict)
+    connection_status_changed = pyqtSignal(bool, str)
+    file_received = pyqtSignal(dict)
+    transfer_progress = pyqtSignal(str, float)
+    log_message = pyqtSignal(str)
+
     def __init__(self):
-        self.protocol = NetworkProtocol()
+        super().__init__()
         self.discovery = NetworkDiscovery()
+        self.protocol = None
+        self.file_receiver = FileReceiver()
         self.connected_server = None
         self.running = False
-        
-    def discover_servers(self) -> List[Dict[str, Any]]:
-        """Discover available servers on the network"""
-        servers = []
-        
+        self.discovery_timer = QTimer()
+        self.discovery_timer.timeout.connect(self.discover_servers)
+
+    def start_discovery(self):
+        """Start server discovery"""
+        self.running = True
+        self.discovery_timer.start(5000)  # Discover every 5 seconds
+        self.discover_servers()
+
+    def stop_discovery(self):
+        """Stop server discovery"""
+        self.running = False
+        self.discovery_timer.stop()
+
+    def discover_servers(self):
+        """Discover available servers"""
         try:
-            # Get local network info
-            local_ip = self.discovery.get_local_ip()
-            network_range = self.discovery.get_network_range(local_ip)
-            
-            print(f"Scanning network: {network_range}")
-            
-            # Scan for servers
-            for ip in self.discovery.scan_network_range(network_range):
+            local_ip = get_local_ip()
+            network_range = self.discovery.get_network_range()
+
+            servers = []
+            for ip in network_range[:20]:  # Scan first 20 IPs for speed
                 if ip == local_ip:
                     continue
-                    
+
                 try:
-                    # Check if server port is open
+                    # Test connection to server port
                     test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    test_sock.settimeout(1)
+                    test_sock.settimeout(0.5)
                     result = test_sock.connect_ex((ip, 5000))
-                    
+
                     if result == 0:
-                        # Send discovery message with proper JSON format
+                        # Send discovery request
                         discovery_msg = {
-                            'type': 'DISCOVERY',
-                            'client_ip': local_ip,
-                            'timestamp': time.time()
+                            "type": "discovery",
+                            "client_ip": local_ip,
+                            "timestamp": time.time()
                         }
-                        
-                        # Send with length prefix
+
                         msg_data = json.dumps(discovery_msg).encode('utf-8')
-                        msg_length = len(msg_data)
-                        
-                        test_sock.send(msg_length.to_bytes(4, byteorder='big'))
+                        test_sock.send(len(msg_data).to_bytes(4, 'big'))
                         test_sock.send(msg_data)
-                        
+
                         # Wait for response
-                        test_sock.settimeout(2)
                         try:
-                            response_length_bytes = test_sock.recv(4)
-                            if len(response_length_bytes) == 4:
-                                response_length = int.from_bytes(response_length_bytes, byteorder='big')
-                                response_data = test_sock.recv(response_length)
-                                
-                                if len(response_data) == response_length:
-                                    response = json.loads(response_data.decode('utf-8'))
-                                    if response.get('type') == 'DISCOVERY_RESPONSE':
-                                        servers.append({
-                                            'ip': ip,
-                                            'name': response.get('server_name', 'LAN Server'),
-                                            'port': response.get('server_port', 5000)
-                                        })
-                                        print(f"Discovered server: {ip}")
-                        except (socket.timeout, json.JSONDecodeError):
+                            resp_len = int.from_bytes(test_sock.recv(4), 'big')
+                            resp_data = test_sock.recv(resp_len)
+                            response = json.loads(resp_data.decode('utf-8'))
+
+                            if response.get('type') == 'discovery_response':
+                                server_info = {
+                                    'ip': ip,
+                                    'hostname': response.get('server_name', 'LAN Server'),
+                                    'port': 5000
+                                }
+                                servers.append(server_info)
+                                self.server_discovered.emit(server_info)
+                        except:
                             pass
-                    
+
                     test_sock.close()
-                    
-                except Exception as e:
+                except:
                     continue
-                    
+
         except Exception as e:
-            print(f"Discovery error: {e}")
-            
-        return servers
-    
+            self.log_message.emit(f"Discovery error: {str(e)}")
+
     def connect_to_server(self, server_ip: str, server_port: int = 5000) -> bool:
-        """Connect to a specific server"""
+        """Connect to a server"""
         try:
-            self.protocol.connect(server_ip, server_port)
-            self.connected_server = {'ip': server_ip, 'port': server_port}
-            print(f"Connected to server: {server_ip}:{server_port}")
-            return True
+            self.protocol = ClientProtocol(server_ip, server_port)
+
+            # Register message handlers
+            self.protocol.register_message_handler(MessageType.FILE_TRANSFER, self.handle_file_transfer)
+            self.protocol.register_connection_callback(self.on_connection_status_changed)
+
+            # Register file receive handlers
+            self.file_receiver.register_receive_callback("default", self.on_file_progress)
+
+            success = self.protocol.connect()
+            if success:
+                self.connected_server = {'ip': server_ip, 'port': server_port}
+                self.log_message.emit(f"Connected to server: {server_ip}")
+                return True
+            else:
+                self.log_message.emit("Failed to connect to server")
+                return False
+
         except Exception as e:
-            print(f"Connection failed: {e}")
+            self.log_message.emit(f"Connection error: {str(e)}")
             return False
-    
+
     def disconnect_from_server(self):
         """Disconnect from current server"""
-        if self.protocol.is_connected():
+        if self.protocol:
             self.protocol.disconnect()
+            self.protocol = None
         self.connected_server = None
-        print("Disconnected from server")
-    
-    def start_receiving(self, message_handler):
-        """Start receiving messages from server"""
-        self.running = True
-        receive_thread = threading.Thread(target=self._receive_loop, args=(message_handler,))
-        receive_thread.daemon = True
-        receive_thread.start()
-    
-    def stop_receiving(self):
-        """Stop receiving messages"""
-        self.running = False
-    
-    def _receive_loop(self, message_handler):
-        """Main receive loop"""
-        while self.running and self.protocol.is_connected():
-            try:
-                message = self.protocol.receive_message()
-                if message:
-                    message_handler(message)
-            except Exception as e:
-                print(f"Receive error: {e}")
-                break
+        self.connection_status_changed.emit(False, "")
+
+    def handle_file_transfer(self, data: Dict[str, Any]):
+        """Handle incoming file transfer"""
+        try:
+            if "transfer_id" in data:
+                # File transfer initiation
+                self.file_receiver.handle_file_transfer_init(data, self.protocol)
+                self.log_message.emit(f"Receiving file: {data.get('file_name', 'Unknown')}")
+            elif "chunk_data" in data:
+                # File chunk
+                self.file_receiver.handle_file_chunk(data, self.protocol)
+
+        except Exception as e:
+            self.log_message.emit(f"File transfer error: {str(e)}")
+
+    def on_connection_status_changed(self, connected: bool):
+        """Handle connection status changes"""
+        if connected:
+            server_ip = self.connected_server['ip'] if self.connected_server else ""
+            self.connection_status_changed.emit(True, server_ip)
+        else:
+            self.connection_status_changed.emit(False, "")
+
+    def on_file_progress(self, status: str, progress: float):
+        """Handle file transfer progress"""
+        self.transfer_progress.emit(status, progress)
+
+        if status == "completed":
+            # Check for received files and auto-install
+            received_files = self.file_receiver.get_received_files()
+            for file_info in received_files:
+                if file_info['type'] == 'installer':
+                    self.auto_install_file(file_info['path'])
+
+                self.file_received.emit(file_info)
+
+    def auto_install_file(self, file_path: str):
+        """Auto-install executable files"""
+        try:
+            if file_path.lower().endswith(('.exe', '.msi')):
+                self.log_message.emit(f"Auto-installing: {os.path.basename(file_path)}")
+                subprocess.Popen([file_path, '/S'], shell=True)
+        except Exception as e:
+            self.log_message.emit(f"Installation error: {str(e)}")
 
 class ClientApplication:
     def __init__(self):
+        self.app = QApplication(sys.argv)
         self.controller = ClientController()
-        self.main_window = None
-        
-    def run(self):
-        """Run the client application"""
-        app = QApplication(sys.argv)
-        
         self.main_window = ClientMainWindow()
-        self.main_window.set_controller(self.controller)
+        self.setup_connections()
+
+    def setup_connections(self):
+        """Setup signal connections"""
+        # Connect controller signals to UI
+        self.controller.log_message.connect(self.main_window.add_activity_event)
+        self.controller.server_discovered.connect(self.update_server_list)
+        self.controller.connection_status_changed.connect(self.on_connection_status_changed)
+        self.controller.file_received.connect(self.on_file_received)
+        self.controller.transfer_progress.connect(self.on_transfer_progress)
+
+        # Connect UI signals to controller
+        self.main_window.server_widget.server_connected.connect(self.on_connect_request)
+        self.main_window.server_widget.refresh_servers.connect(self.controller.discover_servers)
+
+    def update_server_list(self, server_info: dict):
+        """Update server list in UI"""
+        servers = [server_info]  # In real implementation, maintain a list
+        self.main_window.server_widget.update_servers(servers)
+
+    def on_connection_status_changed(self, connected: bool, server_ip: str):
+        """Handle connection status changes"""
+        self.main_window.update_connection_status(connected, server_ip)
+
+    def on_file_received(self, file_info: dict):
+        """Handle received file"""
+        self.main_window.reception_widget.add_received_file(file_info)
+        self.main_window.update_file_count(len(self.controller.file_receiver.get_received_files()))
+
+    def on_transfer_progress(self, status: str, progress: float):
+        """Handle transfer progress"""
+        # Update UI with transfer progress
+        pass
+
+    def on_connect_request(self, server_ip: str):
+        """Handle connection request from UI"""
+        success = self.controller.connect_to_server(server_ip)
+        if not success:
+            QMessageBox.warning(self.main_window, "Connection Error", 
+                              "Failed to connect to server")
+
+    def run(self):
+        """Run the application"""
         self.main_window.show()
-        
-        # Connect signals
-        self.main_window.discover_requested.connect(self.on_discover_servers)
-        self.main_window.connect_requested.connect(self.on_connect_to_server)
-        self.main_window.disconnect_requested.connect(self.on_disconnect_from_server)
-        
-        # Start message handling
-        self.controller.start_receiving(self.on_message_received)
-        
-        sys.exit(app.exec_())
-    
-    def on_discover_servers(self):
-        """Handle server discovery request"""
-        servers = self.controller.discover_servers()
-        self.main_window.update_servers_list(servers)
-    
-    def on_connect_to_server(self, server_ip: str, server_port: int):
-        """Handle connection request"""
-        success = self.controller.connect_to_server(server_ip, server_port)
-        if success:
-            self.main_window.set_connection_status(True, server_ip)
-        else:
-            self.main_window.show_error("Failed to connect to server")
-    
-    def on_disconnect_from_server(self):
-        """Handle disconnection request"""
-        self.controller.disconnect_from_server()
-        self.main_window.set_connection_status(False)
-    
-    def on_message_received(self, message: Dict[str, Any]):
-        """Handle received messages from server"""
-        msg_type = message.get('type')
-        
-        if msg_type == MessageType.FILE_TRANSFER.value:
-            self.handle_file_transfer(message)
-        elif msg_type == MessageType.SYSTEM_MESSAGE.value:
-            self.main_window.add_log_message(message.get('content', ''))
-    
-    def handle_file_transfer(self, message: Dict[str, Any]):
-        """Handle incoming file transfer"""
-        try:
-            filename = message.get('filename')
-            filesize = message.get('filesize')
-            
-            if not filename or not filesize:
-                return
-            
-            self.main_window.add_log_message(f"Receiving file: {filename} ({filesize} bytes)")
-            
-            # Create received files directory
-            received_dir = Path("received_files")
-            received_dir.mkdir(exist_ok=True)
-            
-            file_path = received_dir / filename
-            
-            # Receive file data
-            received_bytes = 0
-            with open(file_path, 'wb') as f:
-                while received_bytes < filesize:
-                    chunk_size = min(4096, filesize - received_bytes)
-                    chunk = self.controller.protocol.receive_data(chunk_size)
-                    
-                    if not chunk:
-                        break
-                    
-                    f.write(chunk)
-                    received_bytes += len(chunk)
-                    
-                    # Update progress
-                    progress = int((received_bytes / filesize) * 100)
-                    self.main_window.update_transfer_progress(filename, progress)
-            
-            if received_bytes == filesize:
-                self.main_window.add_log_message(f"File received successfully: {filename}")
-                self.main_window.add_received_file(filename, str(file_path))
-                
-                # Check if it's an installer
-                if filename.lower().endswith(('.exe', '.msi')):
-                    self.run_installer(file_path)
-            else:
-                self.main_window.add_log_message(f"File transfer incomplete: {filename}")
-                
-        except Exception as e:
-            self.main_window.add_log_message(f"File transfer error: {e}")
-    
-    def run_installer(self, file_path: Path):
-        """Run installer silently"""
-        try:
-            import subprocess
-            self.main_window.add_log_message(f"Running installer: {file_path.name}")
-            
-            # Run installer with silent flag
-            subprocess.Popen([str(file_path), '/S'], shell=True)
-            self.main_window.add_log_message(f"Installer started: {file_path.name}")
-            
-        except Exception as e:
-            self.main_window.add_log_message(f"Failed to run installer: {e}")
+
+        # Start discovery
+        self.controller.start_discovery()
+
+        return self.app.exec_()
 
 def main():
     """Main entry point"""
-    client_app = ClientApplication()
-    client_app.run()
+    app = ClientApplication()
+    sys.exit(app.run())
 
 if __name__ == "__main__":
     main()

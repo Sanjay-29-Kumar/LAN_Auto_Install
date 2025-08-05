@@ -20,6 +20,7 @@ class ServerListWidget(QWidget):
     
     server_selected = pyqtSignal(str)  # server_ip
     server_connected = pyqtSignal(str)  # server_ip
+    refresh_servers = pyqtSignal()  # signal for refresh request
     
     def __init__(self):
         super().__init__()
@@ -54,7 +55,7 @@ class ServerListWidget(QWidget):
         # Control buttons
         button_layout = QHBoxLayout()
         self.refresh_btn = QPushButton("Refresh")
-        self.refresh_btn.clicked.connect(self.refresh_servers)
+        self.refresh_btn.clicked.connect(self.refresh_servers_clicked)
         self.connect_btn = QPushButton("Connect")
         self.connect_btn.clicked.connect(self.connect_to_server)
         self.connect_btn.setEnabled(False)
@@ -115,10 +116,10 @@ class ServerListWidget(QWidget):
         if self.selected_server:
             self.server_connected.emit(self.selected_server)
     
-    def refresh_servers(self):
+    def refresh_servers_clicked(self):
         """Refresh server list"""
-        # This would trigger a server discovery
-        pass
+        # Emit signal to trigger server discovery
+        self.refresh_servers.emit()
 
 class FileReceptionWidget(QWidget):
     """Widget for managing received files"""
