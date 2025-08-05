@@ -6,3 +6,5 @@ it takes more time to sharing
 and needed a very good professional ui like gui is also needed to be good
 like whenever it is installing or sharing ,if possible we shall make like percentage and bar graph showning 
 downloading or sharing status 
+
+update it completely
