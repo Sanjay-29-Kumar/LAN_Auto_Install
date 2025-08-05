@@ -4,7 +4,9 @@ if it is an installation file like exe or related,
 it is needed to be updated like installing and setting up silently to use that files immediately 
 it takes more time to sharing 
 and needed a very good professional ui like gui is also needed to be good
-like whenever it is installing or sharing ,if possible we shall make like percentage and bar graph showning 
+like whenever it is installing or sharing ,if possible we shall make like percentage and bar graph showing 
 downloading or sharing status 
 
 update it completely
+
+enhance ui very better to understand by every user and neat and clean and update fast finding and sharing 
