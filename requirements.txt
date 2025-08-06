@@ -1,0 +1,2 @@
+cryptography>=3.4.8
+win10toast>=0.9 
