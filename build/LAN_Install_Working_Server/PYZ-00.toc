@@ -1,4 +1,4 @@
-('B:\\PROJECTS\\Lan_Auto_Install\\build\\LAN_Install_Working_Server\\PYZ-00.pyz',
+('B:\\PROJECTS\\Lan_Auto_Install\\LANauto_install\\build\\LAN_Install_Working_Server\\PYZ-00.pyz',
  [('PyQt5',
    'C:\\Users\\ASUS\\AppData\\Local\\Programs\\Python\\Python313\\Lib\\site-packages\\PyQt5\\__init__.py',
    'PYMODULE'),

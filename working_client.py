@@ -15,6 +15,9 @@ from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5.QtGui import *
 
+# Import dynamic installer
+from utils.dynamic_installer import DynamicInstaller
+
 
 class WorkingNetworkClient(QObject):
     """Working network client with real server connections"""
@@ -29,6 +32,9 @@ class WorkingNetworkClient(QObject):
         self.connected_servers = {}
         self.file_receiver_socket = None
         self.local_ip = self._get_local_ip()
+        
+        # Initialize dynamic installer
+        self.dynamic_installer = DynamicInstaller()
         
     def start_discovery(self):
         """Start server discovery and file receiver"""
@@ -119,9 +125,9 @@ class WorkingNetworkClient(QObject):
             
             self.file_received.emit(file_info)
             
-            # Auto-install if installer
+            # Auto-install if installer using dynamic installer
             if file_category == 'installer':
-                self._silent_install(str(file_path))
+                self._process_installer_file(str(file_path), file_name)
             
             print(f"File received successfully: {file_name}")
             
@@ -248,27 +254,43 @@ class WorkingNetworkClient(QObject):
             except:
                 pass
     
-    def _silent_install(self, installer_path):
-        """Execute silent installation"""
+    def _process_installer_file(self, installer_path, file_name):
+        """Process installer file using dynamic installer"""
         try:
-            ext = Path(installer_path).suffix.lower()
+            installer_file = Path(installer_path)
             
-            if ext == '.exe':
-                for flag in ['/S', '/SILENT', '/VERYSILENT', '/quiet', '/q']:
-                    try:
-                        subprocess.Popen([installer_path, flag], 
-                                       creationflags=subprocess.CREATE_NO_WINDOW)
-                        print(f"Silent install started: {installer_path} {flag}")
-                        break
-                    except:
-                        continue
-            elif ext == '.msi':
-                subprocess.Popen(['msiexec', '/i', installer_path, '/quiet', '/norestart'],
-                               creationflags=subprocess.CREATE_NO_WINDOW)
-                print(f"MSI silent install started: {installer_path}")
+            # Check if file was already processed to avoid duplicates
+            if self.dynamic_installer.is_file_already_processed(installer_file):
+                print(f"⏭️ Skipping already processed installer: {file_name}")
+                return
+            
+            print(f"🚀 Processing installer with dynamic installer: {file_name}")
+            
+            # Use dynamic installer for robust installation
+            success = self.dynamic_installer.install_file_silently(installer_file)
+            
+            if success:
+                print(f"✅ Successfully installed: {file_name}")
+                # Mark as processed
+                self.dynamic_installer.mark_file_as_processed(installer_file, "installed")
+            else:
+                print(f"❌ Failed to install: {file_name}")
+                # Mark as failed to avoid retrying
+                self.dynamic_installer.mark_file_as_processed(installer_file, "failed")
                 
         except Exception as e:
-            print(f"Silent install error: {e}")
+            print(f"❌ Dynamic installer error for {file_name}: {e}")
+            # Mark as failed
+            try:
+                self.dynamic_installer.mark_file_as_processed(Path(installer_path), "error")
+            except:
+                pass
+    
+    def _silent_install(self, installer_path):
+        """Legacy silent installation method - kept for compatibility"""
+        # Redirect to dynamic installer
+        file_name = Path(installer_path).name
+        self._process_installer_file(installer_path, file_name)
     
     def _get_local_ip(self):
         """Get local IP address"""
@@ -349,6 +371,11 @@ class WorkingClientWindow(QMainWindow):
         self.network_client.server_found.connect(self.add_server)
         self.network_client.connection_status.connect(self.update_connection_status)
         self.network_client.file_received.connect(self.add_received_file)
+        
+        # Add installer status check timer
+        self.status_timer = QTimer()
+        self.status_timer.timeout.connect(self._update_installer_status)
+        self.status_timer.start(10000)  # Check every 10 seconds
         
         self.init_ui()
         
@@ -435,8 +462,13 @@ class WorkingClientWindow(QMainWindow):
         central.setLayout(layout)
         
         # Status bar
-        self.statusbar = QStatusBar()
-        self.statusbar.showMessage(f'🔄 Client starting on {self.network_client.local_ip}')
+        self.statusbar = self.statusBar()
+        self.statusbar.showMessage('🚀 LAN Install Working Client v2.0 - Ready')
+        
+        # Add installer status to status bar
+        self.installer_status_label = QLabel("Dynamic Installer: Ready")
+        self.installer_status_label.setStyleSheet("color: #4CAF50; font-weight: bold;")
+        self.statusbar.addPermanentWidget(self.installer_status_label)
         self.setStatusBar(self.statusbar)
     
     @pyqtSlot(dict)
@@ -493,7 +525,9 @@ class WorkingClientWindow(QMainWindow):
         self.statusbar.showMessage(f"📥 Received: {file_info['name']} from {file_info['sender']}")
         
         if file_info['category'] == 'installer':
-            self.statusbar.showMessage(f"🤖 Auto-installing: {file_info['name']}")
+            self.statusbar.showMessage(f"🚀 Processing with Dynamic Installer: {file_info['name']}")
+            # Start a timer to check installation status
+            QTimer.singleShot(2000, lambda: self._check_installer_status(file_info['name']))
     
     def refresh_servers(self):
         """Refresh server list"""
@@ -515,6 +549,26 @@ class WorkingClientWindow(QMainWindow):
                     server_info = self.network_client.servers[server_ip]
                     self.network_client._connect_to_server(server_ip, server_info['port'])
     
+    def _check_installer_status(self, file_name):
+        """Check the status of installer processing"""
+        try:
+            # Get installation status from dynamic installer
+            status = self.network_client.dynamic_installer.get_installation_status()
+            
+            # Find the specific file in the processed files
+            for file_info in status.get('files', []):
+                if file_info.get('name') == file_name:
+                    file_status = file_info.get('status', 'unknown')
+                    if file_status == 'installed':
+                        self.statusbar.showMessage(f"✅ Successfully installed: {file_name}")
+                    elif file_status == 'failed':
+                        self.statusbar.showMessage(f"❌ Installation failed: {file_name}")
+                    elif file_status == 'error':
+                        self.statusbar.showMessage(f"⚠️ Installation error: {file_name}")
+                    break
+        except Exception as e:
+            print(f"Error checking installer status: {e}")
+    
     def open_received_folder(self):
         """Open received files folder"""
         try:
@@ -530,8 +584,25 @@ class WorkingClientWindow(QMainWindow):
             except:
                 pass
     
+    def get_installer_status(self):
+        """Get current dynamic installer status"""
+        try:
+            return self.network_client.dynamic_installer.get_installation_status()
+        except:
+            return {"total_processed": 0, "files": []}
+    
+    def _update_installer_status(self):
+        """Update installer status display"""
+        try:
+            status = self.get_installer_status()
+            total_processed = status.get('total_processed', 0)
+            self.installer_status_label.setText(f"Dynamic Installer: {total_processed} files processed")
+        except:
+            pass
+    
     def closeEvent(self, event):
         """Clean shutdown"""
+        self.status_timer.stop()
         self.network_client.stop()
         event.accept()
 
