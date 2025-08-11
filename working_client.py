@@ -542,9 +542,17 @@ class WorkingClientWindow(QMainWindow):
         file_buttons = QHBoxLayout()
         self.open_folder_btn = QPushButton('📂 Open Folder')
         self.install_btn = QPushButton('⚡ Install Selected')
+        self.clear_files_btn = QPushButton('🧹 Clear List')
+        self.cancel_monitoring_btn = QPushButton('🛑 Stop Monitoring')
+        
         self.open_folder_btn.clicked.connect(self.open_received_folder)
+        self.clear_files_btn.clicked.connect(self.clear_received_files)
+        self.cancel_monitoring_btn.clicked.connect(self.toggle_monitoring)
+        
         file_buttons.addWidget(self.open_folder_btn)
         file_buttons.addWidget(self.install_btn)
+        file_buttons.addWidget(self.clear_files_btn)
+        file_buttons.addWidget(self.cancel_monitoring_btn)
         right_layout.addLayout(file_buttons)
         
         right_panel.setLayout(right_layout)
@@ -698,6 +706,39 @@ class WorkingClientWindow(QMainWindow):
             self.installer_status_label.setText(f"Dynamic Installer: {total_processed} files processed")
         except:
             pass
+    
+    def clear_received_files(self):
+        """Clear the received files list"""
+        reply = QMessageBox.question(
+            self, 
+            'Clear Files List', 
+            'Are you sure you want to clear the received files list?\n\nNote: This only clears the UI list, not the actual files.',
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            self.file_list.clear()
+            self.statusbar.showMessage('🧹 Received files list cleared')
+    
+    def toggle_monitoring(self):
+        """Toggle monitoring on/off"""
+        if self.network_client.dynamic_installer._monitoring:
+            # Stop monitoring
+            self.network_client.dynamic_installer.stop_monitoring()
+            self.cancel_monitoring_btn.setText('▶️ Start Monitoring')
+            self.cancel_monitoring_btn.setStyleSheet(
+                "background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1, stop: 0 #4CAF50, stop: 1 #45a049);"
+            )
+            self.statusbar.showMessage('🛑 Monitoring stopped - files will not auto-install')
+        else:
+            # Start monitoring
+            self.network_client.dynamic_installer.start_monitoring(check_interval=10)
+            self.cancel_monitoring_btn.setText('🛑 Stop Monitoring')
+            self.cancel_monitoring_btn.setStyleSheet(
+                "background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1, stop: 0 #f44336, stop: 1 #d32f2f);"
+            )
+            self.statusbar.showMessage('▶️ Monitoring started - files will auto-install immediately')
     
     def closeEvent(self, event):
         """Clean shutdown"""

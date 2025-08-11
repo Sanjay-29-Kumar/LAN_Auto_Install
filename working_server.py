@@ -107,6 +107,7 @@ class WorkingNetworkServer(QObject):
     def _handle_client_connection(self, sock, addr):
         """Handle client connection"""
         client_ip = addr[0]
+        print(f" New client connection from {client_ip}")
         
         try:
             while self.running:
@@ -114,41 +115,64 @@ class WorkingNetworkServer(QObject):
                     sock.settimeout(5.0)
                     data = sock.recv(1024)
                     if not data:
+                        print(f"No data received from {client_ip}, closing connection")
                         break
                     
-                    # Parse message
-                    message_line = data.decode('utf-8').strip()
-                    if not message_line:
+                    # Parse message - handle multiple messages in one packet
+                    message_data = data.decode('utf-8').strip()
+                    if not message_data:
                         continue
-                        
-                    message = json.loads(message_line)
                     
-                    if message.get('type') == 'client_register':
-                        # Register new client
-                        client_info = {
-                            'ip': client_ip,
-                            'hostname': message.get('hostname', f'Client-{client_ip.split(".")[-1]}'),
-                            'port': message.get('client_port', 5002),
-                            'connected': True,
-                            'last_seen': time.time(),
-                            'files_sent': 0
-                        }
-                        
-                        self.clients[client_ip] = client_info
-                        self.client_sockets[client_ip] = sock
-                        self.client_connected.emit(client_info)
-                        
-                        print(f"Client registered: {client_info['hostname']} ({client_ip})")
-                    
-                    elif message.get('type') == 'heartbeat':
-                        # Update last seen
-                        if client_ip in self.clients:
-                            self.clients[client_ip]['last_seen'] = time.time()
+                    # Split by newlines in case multiple messages are sent
+                    for message_line in message_data.split('\n'):
+                        if not message_line.strip():
+                            continue
+                            
+                        try:
+                            message = json.loads(message_line.strip())
+                            print(f"Received message from {client_ip}: {message.get('type', 'unknown')}")
+                            
+                            if message.get('type') == 'client_register':
+                                # Register new client
+                                client_info = {
+                                    'ip': client_ip,
+                                    'hostname': message.get('hostname', f'Client-{client_ip.split(".")[-1]}'),
+                                    'port': message.get('client_port', 5002),
+                                    'connected': True,
+                                    'last_seen': time.time(),
+                                    'files_sent': 0
+                                }
+                                
+                                self.clients[client_ip] = client_info
+                                self.client_sockets[client_ip] = sock
+                                print(f"Client registered successfully: {client_info['hostname']} ({client_ip})")
+                                self.client_connected.emit(client_info)
+                                
+                                # Send acknowledgment back to client
+                                ack = json.dumps({
+                                    'type': 'registration_ack',
+                                    'status': 'success',
+                                    'server_hostname': socket.gethostname()
+                                }).encode('utf-8')
+                                sock.send(ack + b'\n')
+                                
+                            elif message.get('type') == 'heartbeat':
+                                # Update last seen
+                                if client_ip in self.clients:
+                                    self.clients[client_ip]['last_seen'] = time.time()
+                                    print(f"💓 Heartbeat from {client_ip}")
+                                else:
+                                    print(f"⚠️ Heartbeat from unregistered client {client_ip}")
+                                
+                        except json.JSONDecodeError as e:
+                            print(f"⚠️ JSON decode error from {client_ip}: {e}")
+                            continue
                     
                 except socket.timeout:
+                    # Timeout is normal, continue listening
                     continue
                 except Exception as e:
-                    print(f"Client message error: {e}")
+                    print(f"Client message error from {client_ip}: {e}")
                     break
                     
         except Exception as e:
@@ -444,13 +468,22 @@ class WorkingServerWindow(QMainWindow):
         
         file_buttons = QHBoxLayout()
         self.add_files_btn = QPushButton('➕ Add Files')
-        self.distribute_btn = QPushButton('🚀 Distribute')
+        self.send_selected_btn = QPushButton('📤 Send to Selected')
+        self.send_all_btn = QPushButton('🚀 Send to All')
+        self.clear_files_btn = QPushButton('🧹 Clear List')
+        self.cancel_transfer_btn = QPushButton('❌ Cancel Transfer')
         
         self.add_files_btn.clicked.connect(self.add_files)
-        self.distribute_btn.clicked.connect(self.distribute_files)
+        self.send_selected_btn.clicked.connect(self.send_to_selected)
+        self.send_all_btn.clicked.connect(self.send_to_all)
+        self.clear_files_btn.clicked.connect(self.clear_distribution_list)
+        self.cancel_transfer_btn.clicked.connect(self.cancel_current_transfer)
         
         file_buttons.addWidget(self.add_files_btn)
-        file_buttons.addWidget(self.distribute_btn)
+        file_buttons.addWidget(self.send_selected_btn)
+        file_buttons.addWidget(self.send_all_btn)
+        file_buttons.addWidget(self.clear_files_btn)
+        file_buttons.addWidget(self.cancel_transfer_btn)
         right_layout.addLayout(file_buttons)
         
         right_panel.setLayout(right_layout)
@@ -605,6 +638,36 @@ class WorkingServerWindow(QMainWindow):
     def distribute_files(self):
         """Distribute files (same as send to all)"""
         self.send_to_all()
+    
+    def clear_distribution_list(self):
+        """Clear the distribution files list"""
+        reply = QMessageBox.question(
+            self, 
+            'Clear Distribution List', 
+            'Are you sure you want to clear the distribution files list?\n\nNote: This will remove all files from the distribution queue.',
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            self.distribution_list.clear()
+            self.network_server.files_to_distribute.clear()
+            self.statusbar.showMessage('🧹 Distribution list cleared')
+    
+    def cancel_current_transfer(self):
+        """Cancel any ongoing file transfers"""
+        reply = QMessageBox.question(
+            self, 
+            'Cancel Transfer', 
+            'Are you sure you want to cancel the current file transfer?\n\nNote: This will stop any ongoing file distribution.',
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            # Set a flag to cancel transfers (would need to be implemented in transfer logic)
+            self.statusbar.showMessage('❌ File transfer cancellation requested')
+            # Note: Full implementation would require adding cancellation logic to the transfer threads
     
     def closeEvent(self, event):
         """Clean shutdown"""

@@ -161,22 +161,22 @@ class DynamicInstaller:
             return False
     
     def process_new_installers(self) -> Dict[str, str]:
-        """Process all new installer files with immediate automatic installation"""
+        """Process only truly new installer files with immediate automatic installation"""
         results = {}
         installer_files = self.get_installer_files()
         
         if not installer_files:
-            print("📂 No installer files found")
-            return results
+            return results  # Silent return for empty directory
         
-        print(f"🔍 Found {len(installer_files)} installer files - Starting automatic installation...")
+        # Only process files that haven't been processed yet
+        new_files = [f for f in installer_files if not self.is_file_already_processed(f)]
         
-        for installer_file in installer_files:
-            if self.is_file_already_processed(installer_file):
-                results[installer_file.name] = "skipped_already_processed"
-                print(f"⏭️ Skipping already processed: {installer_file.name}")
-                continue
-            
+        if not new_files:
+            return results  # Silent return if no new files
+        
+        print(f"🔍 Found {len(new_files)} new installer files - Starting automatic installation...")
+        
+        for installer_file in new_files:
             print(f"🚀 Auto-installing: {installer_file.name}")
             
             # Install the file immediately with robust method
@@ -220,21 +220,43 @@ class DynamicInstaller:
         print("Stopped monitoring received files directory")
     
     def _monitor_loop(self, check_interval: int):
-        """Main monitoring loop"""
+        """Main monitoring loop - only processes truly new files"""
+        last_check_time = time.time()
+        
         while self._monitoring:
             try:
-                print("Checking for new installer files...")
-                results = self.process_new_installers()
+                # Only check for files modified after last check to avoid repeated processing
+                current_time = time.time()
+                new_files_found = False
                 
-                if results:
-                    print("Processing results:")
-                    for filename, status in results.items():
-                        print(f"  {filename}: {status}")
+                installer_files = self.get_installer_files()
+                for installer_file in installer_files:
+                    file_modified_time = installer_file.stat().st_mtime
+                    
+                    # Only process files modified after last check and not already processed
+                    if (file_modified_time > last_check_time and 
+                        not self.is_file_already_processed(installer_file)):
+                        new_files_found = True
+                        break
+                
+                if new_files_found:
+                    print("🔍 New installer files detected - processing...")
+                    results = self.process_new_installers()
+                    
+                    if results:
+                        print("📋 Processing results:")
+                        for filename, status in results.items():
+                            if status != "skipped_already_processed":
+                                print(f"  {filename}: {status}")
                 else:
-                    print("No new files to process")
+                    # Reduced logging to avoid spam
+                    if current_time - last_check_time > 60:  # Log every minute instead of every check
+                        print("📂 Monitoring active - no new files")
+                
+                last_check_time = current_time
                 
             except Exception as e:
-                print(f"Error in monitoring loop: {e}")
+                print(f"❌ Error in monitoring loop: {e}")
             
             # Wait for next check
             for _ in range(check_interval):
