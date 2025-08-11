@@ -44,53 +44,47 @@ class WorkingNetworkClient(QObject):
         self.received_files_path = self.exe_dir / "received_files"
         print(f" Received files will be stored in: {self.received_files_path}")
         
-        # Initialize dynamic installer with correct path
+        # Initialize dynamic installer with received files path
         self.dynamic_installer = DynamicInstaller(str(self.received_files_path))
         
-        # Start integrated auto setup on initialization
+        # Flag to ensure integrated auto setup runs only once
+        self._auto_setup_initialized = False
+        
+        # Start integrated auto setup on initialization (only once)
         self._start_integrated_auto_setup()
     
     def _start_integrated_auto_setup(self):
-        """Start integrated auto setup functionality - processes existing files and starts monitoring"""
+        """Start integrated auto setup functionality - processes existing files and starts monitoring (only once)"""
+        # Prevent repeated initialization
+        if self._auto_setup_initialized:
+            print("ℹ️ Auto setup already initialized - skipping")
+            return
+            
         try:
-            print("🚀 STARTING INTEGRATED AUTO SETUP...")
-            print("=" * 60)
+            print("🚀 Initializing integrated auto setup...")
             
-            # Show current status
-            status = self.dynamic_installer.get_installation_status()
-            print(f"📁 Installers path: {status['installers_path']}")
-            print(f"📊 Previously processed files: {status['total_processed']}")
-            
-            # IMMEDIATELY process any existing files - NO USER CONFIRMATION
-            print("\n🚀 PROCESSING EXISTING INSTALLER FILES...")
+            # Process any existing files silently
             results = self.dynamic_installer.manual_install_check()
             
             if results:
-                print("\n📋 Auto-Installation Results:")
-                print("-" * 50)
+                new_installations = 0
                 for filename, status in results.items():
-                    status_emoji = {
-                        "installed_successfully": "✅",
-                        "installation_failed": "❌",
-                        "skipped_already_processed": "⏭️"
-                    }.get(status, "❓")
-                    
-                    print(f"{status_emoji} {filename}: {status.replace('_', ' ').title()}")
-                    
-                    # Show ready-to-use message for successful installations
                     if status == "installed_successfully":
-                        print(f"    🎉 {filename} is now READY TO USE!")
-            else:
-                print("📂 No existing installer files found to process.")
+                        new_installations += 1
+                        print(f"✅ Auto-installed: {filename}")
+                    elif status == "installation_failed":
+                        print(f"❌ Failed to install: {filename}")
+                
+                if new_installations > 0:
+                    print(f"🎉 {new_installations} files installed and ready to use!")
             
-            # AUTOMATICALLY start continuous monitoring - NO USER CONFIRMATION
-            print("\n🔄 STARTING AUTOMATIC CONTINUOUS MONITORING...")
-            self.dynamic_installer.start_monitoring(check_interval=10)  # Check every 10 seconds
+            # Start monitoring only if not already running
+            if not self.dynamic_installer._monitoring:
+                self.dynamic_installer.start_monitoring(check_interval=10)
+                print("✅ Auto-install monitoring activated")
             
-            print("✅ INTEGRATED AUTO SETUP ACTIVATED!")
-            print("📝 Monitoring interval: 10 seconds (faster response)")
-            print("🚀 New files will be installed IMMEDIATELY upon receipt")
-            print("=" * 60)
+            # Mark as initialized
+            self._auto_setup_initialized = True
             
         except Exception as e:
             print(f"❌ Error in integrated auto setup: {e}")
