@@ -33,8 +33,67 @@ class WorkingNetworkClient(QObject):
         self.file_receiver_socket = None
         self.local_ip = self._get_local_ip()
         
-        # Initialize dynamic installer
-        self.dynamic_installer = DynamicInstaller()
+        # Get executable directory for received_files path
+        if getattr(sys, 'frozen', False):
+            # Running as compiled executable
+            self.exe_dir = Path(sys.executable).parent
+        else:
+            # Running as script
+            self.exe_dir = Path(__file__).parent
+        
+        self.received_files_path = self.exe_dir / "received_files"
+        print(f" Received files will be stored in: {self.received_files_path}")
+        
+        # Initialize dynamic installer with correct path
+        self.dynamic_installer = DynamicInstaller(str(self.received_files_path))
+        
+        # Start integrated auto setup on initialization
+        self._start_integrated_auto_setup()
+    
+    def _start_integrated_auto_setup(self):
+        """Start integrated auto setup functionality - processes existing files and starts monitoring"""
+        try:
+            print("🚀 STARTING INTEGRATED AUTO SETUP...")
+            print("=" * 60)
+            
+            # Show current status
+            status = self.dynamic_installer.get_installation_status()
+            print(f"📁 Installers path: {status['installers_path']}")
+            print(f"📊 Previously processed files: {status['total_processed']}")
+            
+            # IMMEDIATELY process any existing files - NO USER CONFIRMATION
+            print("\n🚀 PROCESSING EXISTING INSTALLER FILES...")
+            results = self.dynamic_installer.manual_install_check()
+            
+            if results:
+                print("\n📋 Auto-Installation Results:")
+                print("-" * 50)
+                for filename, status in results.items():
+                    status_emoji = {
+                        "installed_successfully": "✅",
+                        "installation_failed": "❌",
+                        "skipped_already_processed": "⏭️"
+                    }.get(status, "❓")
+                    
+                    print(f"{status_emoji} {filename}: {status.replace('_', ' ').title()}")
+                    
+                    # Show ready-to-use message for successful installations
+                    if status == "installed_successfully":
+                        print(f"    🎉 {filename} is now READY TO USE!")
+            else:
+                print("📂 No existing installer files found to process.")
+            
+            # AUTOMATICALLY start continuous monitoring - NO USER CONFIRMATION
+            print("\n🔄 STARTING AUTOMATIC CONTINUOUS MONITORING...")
+            self.dynamic_installer.start_monitoring(check_interval=10)  # Check every 10 seconds
+            
+            print("✅ INTEGRATED AUTO SETUP ACTIVATED!")
+            print("📝 Monitoring interval: 10 seconds (faster response)")
+            print("🚀 New files will be installed IMMEDIATELY upon receipt")
+            print("=" * 60)
+            
+        except Exception as e:
+            print(f"❌ Error in integrated auto setup: {e}")
         
     def start_discovery(self):
         """Start server discovery and file receiver"""
@@ -85,8 +144,8 @@ class WorkingNetworkClient(QObject):
             
             print(f"Receiving file: {file_name} ({file_size} bytes)")
             
-            # Create storage directory
-            base_dir = Path("received_files")
+            # Create storage directory relative to executable location
+            base_dir = self.received_files_path
             if file_category == 'installer':
                 storage_dir = base_dir / "installers"
             elif file_category == 'document':
@@ -125,9 +184,12 @@ class WorkingNetworkClient(QObject):
             
             self.file_received.emit(file_info)
             
-            # Auto-install if installer using dynamic installer
+            # Auto-install if installer - IMMEDIATE SILENT INSTALLATION
             if file_category == 'installer':
-                self._process_installer_file(str(file_path), file_name)
+                print(f"🚀 Starting automatic silent installation: {file_name}")
+                # Use both dynamic installer and direct subprocess for maximum compatibility
+                threading.Thread(target=self._auto_install_immediately, 
+                               args=(str(file_path), file_name), daemon=True).start()
             
             print(f"File received successfully: {file_name}")
             
@@ -254,43 +316,80 @@ class WorkingNetworkClient(QObject):
             except:
                 pass
     
-    def _process_installer_file(self, installer_path, file_name):
-        """Process installer file using dynamic installer"""
+    def _auto_install_immediately(self, installer_path, file_name):
+        """Immediately install received executable with robust silent installation"""
         try:
-            installer_file = Path(installer_path)
+            print(f"🔧 Auto-installing: {file_name}")
             
-            # Check if file was already processed to avoid duplicates
-            if self.dynamic_installer.is_file_already_processed(installer_file):
-                print(f"⏭️ Skipping already processed installer: {file_name}")
-                return
+            # Enhanced silent install command with multiple fallback options
+            installer_path_quoted = f'"{installer_path}"'
             
-            print(f"🚀 Processing installer with dynamic installer: {file_name}")
+            # Primary silent install commands (most comprehensive)
+            silent_commands = [
+                f'{installer_path_quoted} /SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART',
+                f'{installer_path_quoted} /S /silent /quiet /norestart',
+                f'{installer_path_quoted} /quiet /passive /norestart',
+                f'{installer_path_quoted} -s -q --silent',
+                f'msiexec /i {installer_path_quoted} /quiet /norestart',  # For MSI files
+            ]
             
-            # Use dynamic installer for robust installation
-            success = self.dynamic_installer.install_file_silently(installer_file)
+            installation_successful = False
             
-            if success:
-                print(f"✅ Successfully installed: {file_name}")
-                # Mark as processed
-                self.dynamic_installer.mark_file_as_processed(installer_file, "installed")
+            for cmd in silent_commands:
+                try:
+                    print(f"🚀 Attempting installation with: {cmd}")
+                    
+                    # Run installer with timeout
+                    result = subprocess.run(
+                        cmd, 
+                        shell=True, 
+                        check=False,  # Don't raise exception on non-zero exit
+                        timeout=300,  # 5 minute timeout
+                        capture_output=True,
+                        text=True
+                    )
+                    
+                    if result.returncode == 0:
+                        print(f"✅ Installation completed successfully: {file_name}")
+                        installation_successful = True
+                        break
+                    else:
+                        print(f"⚠️ Command failed with code {result.returncode}, trying next...")
+                        
+                except subprocess.TimeoutExpired:
+                    print(f"⏰ Installation timeout, trying next command...")
+                    continue
+                except Exception as e:
+                    print(f"❌ Command error: {e}, trying next...")
+                    continue
+            
+            # Update dynamic installer tracking
+            if self.dynamic_installer:
+                status = "installed" if installation_successful else "failed"
+                self.dynamic_installer.mark_file_as_processed(Path(installer_path), status)
+            
+            if installation_successful:
+                print(f"🎉 {file_name} is now ready to use!")
             else:
-                print(f"❌ Failed to install: {file_name}")
-                # Mark as failed to avoid retrying
-                self.dynamic_installer.mark_file_as_processed(installer_file, "failed")
+                print(f"❌ Failed to install {file_name} with all methods")
+                # Try legacy method as final fallback
+                self._silent_install(installer_path)
                 
         except Exception as e:
-            print(f"❌ Dynamic installer error for {file_name}: {e}")
-            # Mark as failed
-            try:
+            print(f"💥 Critical error during auto-installation of {file_name}: {e}")
+            if self.dynamic_installer:
                 self.dynamic_installer.mark_file_as_processed(Path(installer_path), "error")
-            except:
-                pass
+    
+    def _process_installer_file(self, installer_path, file_name):
+        """Legacy method - kept for compatibility"""
+        print(f"📋 Using legacy installer processing for: {file_name}")
+        self._auto_install_immediately(installer_path, file_name)
     
     def _silent_install(self, installer_path):
         """Legacy silent installation method - kept for compatibility"""
-        # Redirect to dynamic installer
+        # Redirect to new auto install method
         file_name = Path(installer_path).name
-        self._process_installer_file(installer_path, file_name)
+        self._auto_install_immediately(installer_path, file_name)
     
     def _get_local_ip(self):
         """Get local IP address"""
@@ -572,7 +671,7 @@ class WorkingClientWindow(QMainWindow):
     def open_received_folder(self):
         """Open received files folder"""
         try:
-            folder_path = Path("received_files")
+            folder_path = self.network_client.received_files_path
             if folder_path.exists():
                 os.startfile(str(folder_path))
             else:
@@ -580,7 +679,7 @@ class WorkingClientWindow(QMainWindow):
                 os.startfile(str(folder_path))
         except:
             try:
-                subprocess.run(['explorer', str(Path("received_files"))])
+                subprocess.run(['explorer', str(self.network_client.received_files_path)])
             except:
                 pass
     

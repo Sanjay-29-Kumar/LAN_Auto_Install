@@ -11,8 +11,13 @@ class DynamicInstaller:
     def __init__(self, received_files_path: str = None):
         """Initialize dynamic installer with received files monitoring"""
         if received_files_path is None:
-            # Default to received_files directory relative to this file
-            current_dir = Path(__file__).parent.parent
+            # Determine correct path based on execution context
+            if getattr(sys, 'frozen', False):
+                # Running as compiled executable - use executable directory
+                current_dir = Path(sys.executable).parent
+            else:
+                # Running as script - use script directory
+                current_dir = Path(__file__).parent.parent
             self.received_files_path = current_dir / "received_files"
         else:
             self.received_files_path = Path(received_files_path)
@@ -105,95 +110,90 @@ class DynamicInstaller:
         self._save_installed_apps()
     
     def install_file_silently(self, installer_path: Path) -> bool:
-        """Install a single file using silent installation"""
+        """Install a single file using robust silent installation with multiple fallback methods"""
         try:
-            print(f"Starting silent installation of: {installer_path.name}")
+            print(f"🚀 Installing: {installer_path.name}")
             
-            # Get the appropriate silent install command based on file extension
-            file_ext = installer_path.suffix.lower()
+            # Enhanced silent install command with multiple fallback options
+            installer_path_quoted = f'"{str(installer_path)}"'
             
-            if file_ext == '.exe':
-                # Try multiple silent install switches for EXE files
-                silent_switches = [
-                    '/SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART',
-                    '/S /silent',
-                    '/quiet /norestart',
-                    '--silent',
-                    '-s'
-                ]
-                
-                for switch in silent_switches:
-                    cmd = f'"{installer_path}" {switch}'
-                    try:
-                        print(f"Trying command: {cmd}")
-                        result = subprocess.run(
-                            cmd, 
-                            shell=True, 
-                            check=True,
-                            capture_output=True,
-                            text=True,
-                            timeout=300  # 5 minute timeout
-                        )
-                        print(f"Installation completed successfully with switch: {switch}")
+            # Primary silent install commands (most comprehensive)
+            silent_commands = [
+                f'{installer_path_quoted} /SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART',
+                f'{installer_path_quoted} /S /silent /quiet /norestart',
+                f'{installer_path_quoted} /quiet /passive /norestart', 
+                f'{installer_path_quoted} -s -q --silent',
+                f'msiexec /i {installer_path_quoted} /quiet /norestart',  # For MSI files
+            ]
+            
+            for cmd in silent_commands:
+                try:
+                    print(f"🔧 Attempting installation with: {cmd}")
+                    
+                    # Run installer with timeout
+                    result = subprocess.run(
+                        cmd,
+                        shell=True,
+                        check=False,  # Don't raise exception on non-zero exit
+                        timeout=300,  # 5 minute timeout
+                        capture_output=True,
+                        text=True
+                    )
+                    
+                    if result.returncode == 0:
+                        print(f"✅ Installation completed successfully: {installer_path.name}")
                         return True
-                    except subprocess.CalledProcessError as e:
-                        print(f"Failed with switch '{switch}': {e}")
-                        continue
-                    except subprocess.TimeoutExpired:
-                        print(f"Installation timed out with switch: {switch}")
-                        continue
-                
-            elif file_ext == '.msi':
-                cmd = f'msiexec /i "{installer_path}" /quiet /norestart'
-                print(f"Running MSI command: {cmd}")
-                subprocess.run(cmd, shell=True, check=True, timeout=300)
-                print("MSI installation completed successfully")
-                return True
-                
-            elif file_ext == '.msix':
-                cmd = f'powershell -Command "Add-AppxPackage -Path \'{installer_path}\'"'
-                print(f"Running MSIX command: {cmd}")
-                subprocess.run(cmd, shell=True, check=True, timeout=300)
-                print("MSIX installation completed successfully")
-                return True
+                    else:
+                        print(f"⚠️ Command failed with code {result.returncode}, trying next...")
+                        
+                except subprocess.TimeoutExpired:
+                    print(f"⏰ Installation timeout, trying next command...")
+                    continue
+                except Exception as e:
+                    print(f"❌ Command error: {e}, trying next...")
+                    continue
             
-            print(f"No suitable installation method found for: {installer_path}")
+            print(f"❌ All installation methods failed for: {installer_path.name}")
             return False
-            
-        except subprocess.CalledProcessError as e:
-            print(f"Installation failed for {installer_path.name}: {e}")
-            return False
-        except subprocess.TimeoutExpired:
-            print(f"Installation timed out for {installer_path.name}")
-            return False
+                
         except Exception as e:
-            print(f"Unexpected error installing {installer_path.name}: {e}")
+            print(f"💥 Critical error installing {installer_path.name}: {e}")
             return False
     
     def process_new_installers(self) -> Dict[str, str]:
-        """Process all new installer files"""
+        """Process all new installer files with immediate automatic installation"""
         results = {}
         installer_files = self.get_installer_files()
         
-        print(f"Found {len(installer_files)} installer files")
+        if not installer_files:
+            print("📂 No installer files found")
+            return results
+        
+        print(f"🔍 Found {len(installer_files)} installer files - Starting automatic installation...")
         
         for installer_file in installer_files:
             if self.is_file_already_processed(installer_file):
-                print(f"Skipping already processed file: {installer_file.name}")
                 results[installer_file.name] = "skipped_already_processed"
+                print(f"⏭️ Skipping already processed: {installer_file.name}")
                 continue
             
-            print(f"Processing new installer: {installer_file.name}")
+            print(f"🚀 Auto-installing: {installer_file.name}")
             
-            # Attempt installation
-            if self.install_file_silently(installer_file):
+            # Install the file immediately with robust method
+            success = self.install_file_silently(installer_file)
+            
+            if success:
                 self.mark_file_as_processed(installer_file, "installed")
                 results[installer_file.name] = "installed_successfully"
-                print(f"Successfully installed: {installer_file.name}")
+                print(f"🎉 Successfully auto-installed: {installer_file.name} - Ready to use!")
             else:
                 self.mark_file_as_processed(installer_file, "failed")
                 results[installer_file.name] = "installation_failed"
-                print(f"Failed to install: {installer_file.name}")
+                print(f"❌ Failed to auto-install: {installer_file.name}")
+        
+        # Update last check time
+        self.installed_apps["last_check"] = time.time()
+        self._save_installed_apps()
         
         return results
     
