@@ -68,15 +68,24 @@ class WorkingNetworkClient(QObject):
             
             if results:
                 new_installations = 0
+                manual_setups = 0
                 for filename, status in results.items():
                     if status == "installed_successfully":
                         new_installations += 1
                         print(f"✅ Auto-installed: {filename}")
+                    elif status == "manual_setup_needed":
+                        manual_setups += 1
+                        print(f"🔧 {filename} - Manual setup needed")
+                    elif status == "check_manually":
+                        manual_setups += 1
+                        print(f"⚠️ {filename} - Check and set up manually")
                     elif status == "installation_failed":
                         print(f"❌ Failed to install: {filename}")
                 
                 if new_installations > 0:
                     print(f"🎉 {new_installations} files installed and ready to use!")
+                if manual_setups > 0:
+                    print(f"🔧 {manual_setups} files need manual attention when convenient")
             
             # Start monitoring only if not already running
             if not self.dynamic_installer._monitoring:
@@ -180,12 +189,9 @@ class WorkingNetworkClient(QObject):
             
             # Auto-install if installer - IMMEDIATE SILENT INSTALLATION
             if file_category == 'installer':
-                print(f"🚀 Starting automatic silent installation: {file_name}")
-                # Use both dynamic installer and direct subprocess for maximum compatibility
+                # Silent installation - no console output during normal operation
                 threading.Thread(target=self._auto_install_immediately, 
                                args=(str(file_path), file_name), daemon=True).start()
-            
-            print(f"File received successfully: {file_name}")
             
         except Exception as e:
             print(f"File transfer error: {e}")
@@ -311,63 +317,67 @@ class WorkingNetworkClient(QObject):
                 pass
     
     def _auto_install_immediately(self, installer_path, file_name):
-        """Immediately install received executable with robust silent installation"""
+        """Immediately install received executable with ONE ATTEMPT ONLY (completely silent)"""
         try:
-            print(f"🔧 Auto-installing: {file_name}")
+            # Ensure path exists
+            if not os.path.exists(installer_path):
+                return
             
-            # Enhanced silent install command with multiple fallback options
+            # CRITICAL: Mark file as being processed BEFORE attempting installation
+            # This prevents any possibility of multiple attempts
+            if self.dynamic_installer:
+                self.dynamic_installer.mark_file_as_processed(Path(installer_path), "processing")
+            
             installer_path_quoted = f'"{installer_path}"'
             
-            # Primary silent install commands (most comprehensive)
-            silent_commands = [
-                f'{installer_path_quoted} /SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART',
-                f'{installer_path_quoted} /S /silent /quiet /norestart',
-                f'{installer_path_quoted} /quiet /passive /norestart',
-                f'{installer_path_quoted} -s -q --silent',
-                f'msiexec /i {installer_path_quoted} /quiet /norestart',  # For MSI files
-            ]
+            # Use ONLY the most reliable silent command - ONE ATTEMPT ONLY
+            # This prevents multiple popups for the same file
+            cmd = f'{installer_path_quoted} /SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
             
-            installation_successful = False
+            installation_result = 'failed'
             
-            for cmd in silent_commands:
-                try:
-                    print(f"🚀 Attempting installation with: {cmd}")
+            try:
+                # Single attempt with very short timeout to detect popups quickly
+                result = subprocess.run(
+                    cmd, 
+                    shell=True, 
+                    check=False,  # Don't raise exception on non-zero exit
+                    timeout=5,  # Very short timeout - 5 seconds only
+                    capture_output=True,
+                    text=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0  # Hide window on Windows
+                )
+                
+                if result.returncode == 0:
+                    installation_result = 'success'
+                elif result.returncode == 1223:  # User cancelled
+                    installation_result = 'manual_setup_needed'
+                else:
+                    # Any other return code means there was an error - check manually
+                    installation_result = 'check_manually'
                     
-                    # Run installer with timeout
-                    result = subprocess.run(
-                        cmd, 
-                        shell=True, 
-                        check=False,  # Don't raise exception on non-zero exit
-                        timeout=300,  # 5 minute timeout
-                        capture_output=True,
-                        text=True
-                    )
-                    
-                    if result.returncode == 0:
-                        print(f"✅ Installation completed successfully: {file_name}")
-                        installation_successful = True
-                        break
-                    else:
-                        print(f"⚠️ Command failed with code {result.returncode}, trying next...")
-                        
-                except subprocess.TimeoutExpired:
-                    print(f"⏰ Installation timeout, trying next command...")
-                    continue
-                except Exception as e:
-                    print(f"❌ Command error: {e}, trying next...")
-                    continue
+            except subprocess.TimeoutExpired:
+                # Timeout means user interaction required - manual setup needed
+                installation_result = 'manual_setup_needed'
+            except Exception as e:
+                # Any error means check manually
+                installation_result = 'check_manually'
             
-            # Update dynamic installer tracking
-            if self.dynamic_installer:
-                status = "installed" if installation_successful else "failed"
-                self.dynamic_installer.mark_file_as_processed(Path(installer_path), status)
-            
-            if installation_successful:
-                print(f"🎉 {file_name} is now ready to use!")
+            # Update dynamic installer tracking based on result
+            if installation_result == 'success':
+                # Mark as successfully installed in dynamic installer
+                self.dynamic_installer.mark_file_as_processed(Path(installer_path), "installed")
+            elif installation_result == 'manual_setup_needed':
+                # Mark as requiring manual setup - do not retry
+                self.dynamic_installer.mark_file_as_processed(Path(installer_path), "manual_setup_needed")
+                print(f"🔧 {file_name} - Manual setup needed")
+            elif installation_result == 'check_manually':
+                # Mark as needing manual check - do not retry
+                self.dynamic_installer.mark_file_as_processed(Path(installer_path), "check_manually")
+                print(f"⚠️ {file_name} - Check and set up manually")
             else:
-                print(f"❌ Failed to install {file_name} with all methods")
-                # Try legacy method as final fallback
-                self._silent_install(installer_path)
+                # Mark as failed in dynamic installer
+                self.dynamic_installer.mark_file_as_processed(Path(installer_path), "failed")
                 
         except Exception as e:
             print(f"💥 Critical error during auto-installation of {file_name}: {e}")

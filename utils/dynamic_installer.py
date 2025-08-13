@@ -109,56 +109,47 @@ class DynamicInstaller:
         
         self._save_installed_apps()
     
-    def install_file_silently(self, installer_path: Path) -> bool:
-        """Install a single file using robust silent installation with multiple fallback methods"""
+    def install_file_silently(self, installer_path: Path) -> str:
+        """Install a file using ONE silent installation attempt only
+        Returns: 'success', 'manual_setup_needed', or 'check_manually'
+        """
         try:
-            print(f"🚀 Installing: {installer_path.name}")
+            installer_path_quoted = f'"{installer_path}"'
             
-            # Enhanced silent install command with multiple fallback options
-            installer_path_quoted = f'"{str(installer_path)}"'
+            # Use ONLY the most reliable silent command - ONE ATTEMPT ONLY
+            # This prevents multiple popups for the same file
+            cmd = f'{installer_path_quoted} /SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
             
-            # Primary silent install commands (most comprehensive)
-            silent_commands = [
-                f'{installer_path_quoted} /SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART',
-                f'{installer_path_quoted} /S /silent /quiet /norestart',
-                f'{installer_path_quoted} /quiet /passive /norestart', 
-                f'{installer_path_quoted} -s -q --silent',
-                f'msiexec /i {installer_path_quoted} /quiet /norestart',  # For MSI files
-            ]
-            
-            for cmd in silent_commands:
-                try:
-                    print(f"🔧 Attempting installation with: {cmd}")
+            try:
+                # Single attempt with very short timeout to detect popups quickly
+                result = subprocess.run(
+                    cmd,
+                    shell=True,
+                    check=False,  # Don't raise exception on non-zero exit
+                    timeout=5,  # Very short timeout - 5 seconds only
+                    capture_output=True,
+                    text=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0  # Hide window on Windows
+                )
+                
+                if result.returncode == 0:
+                    return 'success'
+                elif result.returncode == 1223:  # User cancelled installation
+                    return 'manual_setup_needed'
+                else:
+                    # Any other return code means there was an error - check manually
+                    return 'check_manually'
                     
-                    # Run installer with timeout
-                    result = subprocess.run(
-                        cmd,
-                        shell=True,
-                        check=False,  # Don't raise exception on non-zero exit
-                        timeout=300,  # 5 minute timeout
-                        capture_output=True,
-                        text=True
-                    )
-                    
-                    if result.returncode == 0:
-                        print(f"✅ Installation completed successfully: {installer_path.name}")
-                        return True
-                    else:
-                        print(f"⚠️ Command failed with code {result.returncode}, trying next...")
-                        
-                except subprocess.TimeoutExpired:
-                    print(f"⏰ Installation timeout, trying next command...")
-                    continue
-                except Exception as e:
-                    print(f"❌ Command error: {e}, trying next...")
-                    continue
-            
-            print(f"❌ All installation methods failed for: {installer_path.name}")
-            return False
+            except subprocess.TimeoutExpired:
+                # Timeout means user interaction required - manual setup needed
+                return 'manual_setup_needed'
+            except Exception as e:
+                # Any error means check manually
+                return 'check_manually'
                 
         except Exception as e:
-            print(f"💥 Critical error installing {installer_path.name}: {e}")
-            return False
+            # Critical error - check manually
+            return 'check_manually'
     
     def process_new_installers(self) -> Dict[str, str]:
         """Process only truly new installer files with immediate automatic installation"""
@@ -174,22 +165,31 @@ class DynamicInstaller:
         if not new_files:
             return results  # Silent return if no new files
         
-        print(f"🔍 Found {len(new_files)} new installer files - Starting automatic installation...")
-        
+        # Process new files with ONE ATTEMPT ONLY - no console output during normal operation
         for installer_file in new_files:
-            print(f"🚀 Auto-installing: {installer_file.name}")
+            # CRITICAL: Mark file as being processed BEFORE attempting installation
+            # This prevents any possibility of multiple attempts
+            self.mark_file_as_processed(installer_file, "processing")
             
-            # Install the file immediately with robust method
-            success = self.install_file_silently(installer_file)
+            # Install the file with single attempt only
+            install_result = self.install_file_silently(installer_file)
             
-            if success:
+            if install_result == 'success':
                 self.mark_file_as_processed(installer_file, "installed")
                 results[installer_file.name] = "installed_successfully"
-                print(f"🎉 Successfully auto-installed: {installer_file.name} - Ready to use!")
+            elif install_result == 'manual_setup_needed':
+                self.mark_file_as_processed(installer_file, "manual_setup_needed")
+                results[installer_file.name] = "manual_setup_needed"
+                # Show clear message once - manual setup needed
+                print(f"🔧 {installer_file.name} - Manual setup needed")
+            elif install_result == 'check_manually':
+                self.mark_file_as_processed(installer_file, "check_manually")
+                results[installer_file.name] = "check_manually"
+                # Show clear message once - check and set up manually
+                print(f"⚠️ {installer_file.name} - Check and set up manually")
             else:
                 self.mark_file_as_processed(installer_file, "failed")
                 results[installer_file.name] = "installation_failed"
-                print(f"❌ Failed to auto-install: {installer_file.name}")
         
         # Update last check time
         self.installed_apps["last_check"] = time.time()
@@ -240,18 +240,10 @@ class DynamicInstaller:
                         break
                 
                 if new_files_found:
-                    print("🔍 New installer files detected - processing...")
+                    # Process new files silently - no console output during normal operation
                     results = self.process_new_installers()
-                    
-                    if results:
-                        print("📋 Processing results:")
-                        for filename, status in results.items():
-                            if status != "skipped_already_processed":
-                                print(f"  {filename}: {status}")
-                else:
-                    # Reduced logging to avoid spam
-                    if current_time - last_check_time > 60:  # Log every minute instead of every check
-                        print("📂 Monitoring active - no new files")
+                    # Silent processing - results are handled internally
+                # No logging during normal monitoring to prevent interruptions
                 
                 last_check_time = current_time
                 
