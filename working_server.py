@@ -11,9 +11,12 @@ import time
 import json
 import hashlib
 from pathlib import Path
+from network.transfer import FileSender
+from network import protocol
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5.QtGui import *
+from ui.custom_widgets import FileTransferWidget
 
 
 class WorkingNetworkServer(QObject):
@@ -22,6 +25,8 @@ class WorkingNetworkServer(QObject):
     client_disconnected = pyqtSignal(str)
     file_sent = pyqtSignal(dict)
     distribution_complete = pyqtSignal(str, int)
+    file_progress = pyqtSignal(str, str, float) # file_name, client_ip, percentage
+    status_update_received = pyqtSignal(str, str, str) # file_name, client_ip, status
     
     def __init__(self):
         super().__init__()
@@ -50,10 +55,10 @@ class WorkingNetworkServer(QObject):
         try:
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.server_socket.bind(('0.0.0.0', 5000))
+            self.server_socket.bind(('0.0.0.0', protocol.COMMAND_PORT))
             self.server_socket.listen(10)
             
-            print("TCP server listening on port 5000")
+            print(f"TCP server listening on port {protocol.COMMAND_PORT}")
             
             while self.running:
                 try:
@@ -73,9 +78,9 @@ class WorkingNetworkServer(QObject):
         """Start UDP broadcast responder"""
         try:
             self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.udp_socket.bind(('0.0.0.0', 5001))
+            self.udp_socket.bind(('0.0.0.0', protocol.DISCOVERY_PORT))
             
-            print("UDP responder listening on port 5001")
+            print(f"UDP responder listening on port {protocol.DISCOVERY_PORT}")
             
             while self.running:
                 try:
@@ -88,7 +93,7 @@ class WorkingNetworkServer(QObject):
                         response = {
                             'type': 'server_response',
                             'hostname': socket.gethostname(),
-                            'port': 5000,
+                            'port': protocol.COMMAND_PORT,
                             'timestamp': time.time()
                         }
                         
@@ -137,7 +142,7 @@ class WorkingNetworkServer(QObject):
                                 client_info = {
                                     'ip': client_ip,
                                     'hostname': message.get('hostname', f'Client-{client_ip.split(".")[-1]}'),
-                                    'port': message.get('client_port', 5002),
+                                    'port': message.get('client_port', protocol.FILE_TRANSFER_PORT),
                                     'connected': True,
                                     'last_seen': time.time(),
                                     'files_sent': 0
@@ -163,6 +168,10 @@ class WorkingNetworkServer(QObject):
                                     print(f"💓 Heartbeat from {client_ip}")
                                 else:
                                     print(f"⚠️ Heartbeat from unregistered client {client_ip}")
+                            elif message.get('type') == protocol.MSG_TYPE_STATUS_UPDATE:
+                                file_name = message.get('file_name')
+                                status = message.get('status')
+                                self.status_update_received.emit(file_name, client_ip, status)
                                 
                         except json.JSONDecodeError as e:
                             print(f"⚠️ JSON decode error from {client_ip}: {e}")
@@ -171,12 +180,18 @@ class WorkingNetworkServer(QObject):
                 except socket.timeout:
                     # Timeout is normal, continue listening
                     continue
+                except json.JSONDecodeError as e:
+                    print(f"JSON decode error from {client_ip}: {e}")
+                    continue # Continue listening for more data
+                except ConnectionResetError:
+                    print(f"Connection reset by {client_ip}.")
+                    break
                 except Exception as e:
-                    print(f"Client message error from {client_ip}: {e}")
+                    print(f"Unhandled error in client handler for {client_ip}: {e}")
                     break
                     
         except Exception as e:
-            print(f"Client connection error: {e}")
+            print(f"Critical error in client connection handler: {e}")
         finally:
             # Clean up disconnected client
             if client_ip in self.clients:
@@ -212,85 +227,49 @@ class WorkingNetworkServer(QObject):
         if not self.files_to_distribute:
             print("No files to distribute")
             return
-        
+
         if client_ips is None:
             client_ips = [ip for ip, client in self.clients.items() if client['connected']]
-        
+
         if not client_ips:
             print("No connected clients")
             return
-        
+
         print(f"Distributing {len(self.files_to_distribute)} files to {len(client_ips)} clients")
-        
+
         for file_info in self.files_to_distribute:
-            threading.Thread(target=self._send_file_to_clients, 
-                           args=(file_info, client_ips), daemon=True).start()
-    
-    def _send_file_to_clients(self, file_info, client_ips):
-        """Send file to multiple clients"""
-        try:
-            with open(file_info['path'], 'rb') as f:
-                file_data = f.read()
-            
-            successful_sends = 0
-            
             for client_ip in client_ips:
-                if client_ip not in self.clients or not self.clients[client_ip]['connected']:
-                    continue
-                
-                try:
-                    client_port = self.clients[client_ip]['port']
+                if client_ip in self.clients and self.clients[client_ip]['connected']:
+                    client_port = self.clients[client_ip].get('port', protocol.FILE_TRANSFER_PORT)
                     
-                    # Connect to client's file receiver
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(30.0)
-                    sock.connect((client_ip, client_port))
-                    
-                    # Send file metadata
-                    metadata = {
-                        'type': 'file_transfer',
-                        'file_name': file_info['name'],
-                        'file_size': file_info['size'],
-                        'category': file_info['category']
-                    }
-                    
-                    sock.send(json.dumps(metadata).encode('utf-8') + b'\n')
-                    
-                    # Send file data
-                    bytes_sent = 0
-                    chunk_size = 2048576  # 2MB chunks
-                    
-                    while bytes_sent < len(file_data):
-                        chunk = file_data[bytes_sent:bytes_sent + chunk_size]
-                        sock.send(chunk)
-                        bytes_sent += len(chunk)
-                    
-                    sock.close()
-                    successful_sends += 1
-                    
-                    # Update client stats
-                    self.clients[client_ip]['files_sent'] += 1
-                    
-                    # Emit file sent signal
-                    send_info = {
-                        'file_name': file_info['name'],
-                        'client_ip': client_ip,
-                        'client_hostname': self.clients[client_ip]['hostname'],
-                        'file_size': file_info['size'],
-                        'sent_time': time.time()
-                    }
-                    self.file_sent.emit(send_info)
-                    
-                    print(f"File sent successfully: {file_info['name']} -> {client_ip}")
-                    
-                except Exception as e:
-                    print(f"Failed to send {file_info['name']} to {client_ip}: {e}")
-            
-            # Emit distribution complete
-            self.distribution_complete.emit(file_info['name'], successful_sends)
-            
-        except Exception as e:
-            print(f"File distribution error: {e}")
+                    # Define callbacks for progress and completion
+                    def progress_update(file_name, percentage):
+                        self.file_progress.emit(file_name, client_ip, percentage)
+
+                    def completion_update(file_name, status):
+                        print(f"Completion status for {file_name} to {client_ip}: {status}")
+                        if status == 'completed':
+                            self.clients[client_ip]['files_sent'] += 1
+                            send_info = {
+                                'file_name': file_info['name'],
+                                'client_ip': client_ip,
+                                'client_hostname': self.clients[client_ip]['hostname'],
+                                'file_size': file_info['size'],
+                                'sent_time': time.time()
+                            }
+                            self.file_sent.emit(send_info)
+                        # self.transfer_completed.emit(file_name, client_ip, status)
+
+                    # Create and start the FileSender thread
+                    sender_thread = FileSender(
+                        client_ip=client_ip,
+                        client_port=client_port,
+                        file_path=file_info['path'],
+                        file_info=file_info,
+                        progress_callback=progress_update,
+                        completion_callback=completion_update
+                    )
+                    sender_thread.start()
     
     def _get_file_category(self, file_path):
         """Get file category"""
@@ -346,349 +325,151 @@ class WorkingNetworkServer(QObject):
                 pass
 
 
-class WorkingServerWindow(QMainWindow):
-    """Working server window with real client connections"""
-    
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle('🚀 LAN Install Working Server v2.0')
-        self.setGeometry(100, 100, 1200, 800)
-        
-        # Professional styling
-        self.setStyleSheet("""
-            QMainWindow { 
-                background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
-                                          stop: 0 #1e1e1e, stop: 1 #2d2d2d);
-                color: white; 
-            }
-            QPushButton { 
-                background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
-                                          stop: 0 #4a90e2, stop: 1 #357abd);
-                border: none; border-radius: 12px; padding: 15px 25px; 
-                font-weight: bold; font-size: 12pt; color: white;
-            }
-            QPushButton:hover { 
-                background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
-                                          stop: 0 #5ba0f2, stop: 1 #4682cd);
-            }
-            QListWidget { 
-                background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
-                                          stop: 0 #3a3a3a, stop: 1 #404040);
-                border: 2px solid #555; border-radius: 12px; padding: 12px;
-                font-size: 11pt;
-            }
-            QLabel { color: white; }
-            QProgressBar {
-                border: 2px solid #555; border-radius: 12px; text-align: center;
-                background: #3a3a3a; color: white; font-weight: bold; height: 30px;
-            }
-            QProgressBar::chunk {
-                background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0,
-                                          stop: 0 #4a90e2, stop: 1 #5ba0f2);
-                border-radius: 10px;
-            }
-        """)
-        
-        # Initialize network server
-        self.network_server = WorkingNetworkServer()
-        
-        # Connect signals
-        self.network_server.client_connected.connect(self.add_client)
-        self.network_server.client_disconnected.connect(self.remove_client)
-        self.network_server.file_sent.connect(self.add_sent_file)
-        self.network_server.distribution_complete.connect(self.update_distribution_status)
-        
-        self.init_ui()
-        
-        # Start server
-        self.network_server.start_server()
-    
-    def init_ui(self):
-        """Initialize UI"""
-        central = QWidget()
-        self.setCentralWidget(central)
-        layout = QVBoxLayout()
-        
-        # Header
-        header = QLabel('🚀 LAN Install Working Server v2.0')
-        header.setAlignment(Qt.AlignCenter)
-        header.setFont(QFont('Segoe UI', 18, QFont.Bold))
-        header.setStyleSheet('color: #4a90e2; margin: 20px;')
-        layout.addWidget(header)
-        
-        # Status
-        self.status_label = QLabel('🔄 Starting server - Listening for clients...')
-        self.status_label.setAlignment(Qt.AlignCenter)
-        self.status_label.setStyleSheet('color: #FFA500; font-size: 14pt; font-weight: bold;')
-        layout.addWidget(self.status_label)
-        
-        # Main content
-        content_layout = QHBoxLayout()
-        
-        # Left panel - Connected Clients
-        left_panel = QWidget()
-        left_layout = QVBoxLayout()
-        
-        clients_title = QLabel('💻 Connected Clients (Live)')
-        clients_title.setFont(QFont('Segoe UI', 14, QFont.Bold))
-        clients_title.setStyleSheet('color: #4a90e2; margin: 10px;')
-        left_layout.addWidget(clients_title)
-        
-        self.client_list = QListWidget()
-        left_layout.addWidget(self.client_list)
-        
-        client_buttons = QHBoxLayout()
-        self.refresh_clients_btn = QPushButton('🔄 Refresh')
-        self.send_to_selected_btn = QPushButton('📤 Send to Selected')
-        self.send_to_all_btn = QPushButton('📡 Send to All')
-        
-        self.refresh_clients_btn.clicked.connect(self.refresh_clients)
-        self.send_to_selected_btn.clicked.connect(self.send_to_selected)
-        self.send_to_all_btn.clicked.connect(self.send_to_all)
-        
-        client_buttons.addWidget(self.refresh_clients_btn)
-        client_buttons.addWidget(self.send_to_selected_btn)
-        client_buttons.addWidget(self.send_to_all_btn)
-        left_layout.addLayout(client_buttons)
-        
-        left_panel.setLayout(left_layout)
-        content_layout.addWidget(left_panel)
-        
-        # Right panel - File Distribution
-        right_panel = QWidget()
-        right_layout = QVBoxLayout()
-        
-        files_title = QLabel('📦 File Distribution (Live)')
-        files_title.setFont(QFont('Segoe UI', 14, QFont.Bold))
-        files_title.setStyleSheet('color: #4a90e2; margin: 10px;')
-        right_layout.addWidget(files_title)
-        
-        self.distribution_list = QListWidget()
-        right_layout.addWidget(self.distribution_list)
-        
-        file_buttons = QHBoxLayout()
-        self.add_files_btn = QPushButton('➕ Add Files')
-        self.send_selected_btn = QPushButton('📤 Send to Selected')
-        self.send_all_btn = QPushButton('🚀 Send to All')
-        self.clear_files_btn = QPushButton('🧹 Clear List')
-        self.cancel_transfer_btn = QPushButton('❌ Cancel Transfer')
-        
-        self.add_files_btn.clicked.connect(self.add_files)
-        self.send_selected_btn.clicked.connect(self.send_to_selected)
-        self.send_all_btn.clicked.connect(self.send_to_all)
-        self.clear_files_btn.clicked.connect(self.clear_distribution_list)
-        self.cancel_transfer_btn.clicked.connect(self.cancel_current_transfer)
-        
-        file_buttons.addWidget(self.add_files_btn)
-        file_buttons.addWidget(self.send_selected_btn)
-        file_buttons.addWidget(self.send_all_btn)
-        file_buttons.addWidget(self.clear_files_btn)
-        file_buttons.addWidget(self.cancel_transfer_btn)
-        right_layout.addLayout(file_buttons)
-        
-        right_panel.setLayout(right_layout)
-        content_layout.addWidget(right_panel)
-        
-        layout.addLayout(content_layout)
-        
-        # Progress bar
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setValue(100)
-        self.progress_bar.setFormat(f'Server Ready - Listening on {self.network_server.local_ip}:5000-5001')
-        layout.addWidget(self.progress_bar)
-        
-        central.setLayout(layout)
-        
-        # Status bar
-        self.statusbar = QStatusBar()
-        self.statusbar.showMessage(f'🟢 Server Ready - Listening on {self.network_server.local_ip}')
-        self.setStatusBar(self.statusbar)
-    
-    @pyqtSlot(dict)
-    def add_client(self, client):
-        """Add connected client"""
-        client_text = f"💻 {client['hostname']} ({client['ip']}) - Connected [ONLINE]"
-        
-        # Remove any existing entry for this client
-        for i in range(self.client_list.count()):
-            item = self.client_list.item(i)
-            if client['ip'] in item.text():
-                self.client_list.takeItem(i)
-                break
-        
-        # Add new entry
-        item = QListWidgetItem(client_text)
-        item.setBackground(QColor(76, 175, 80, 50))  # Green background
-        self.client_list.addItem(item)
-        
-        # Update status
-        client_count = len([c for c in self.network_server.clients.values() if c['connected']])
-        self.status_label.setText(f'✅ Server Active - {client_count} clients connected')
-        self.status_label.setStyleSheet('color: #4CAF50; font-size: 14pt; font-weight: bold;')
-        
-        self.statusbar.showMessage(f"✅ Client connected: {client['hostname']} ({client['ip']})")
-    
-    @pyqtSlot(str)
-    def remove_client(self, client_ip):
-        """Remove disconnected client"""
-        for i in range(self.client_list.count()):
-            item = self.client_list.item(i)
-            if client_ip in item.text():
-                # Update text to show disconnected
-                text = item.text().replace('[ONLINE]', '[OFFLINE]').replace('Connected', 'Disconnected')
-                item.setText(text)
-                item.setBackground(QColor(244, 67, 54, 50))  # Red background
-                break
-        
-        # Update status
-        client_count = len([c for c in self.network_server.clients.values() if c['connected']])
-        if client_count == 0:
-            self.status_label.setText('⚠️ No clients connected - Waiting for connections...')
-            self.status_label.setStyleSheet('color: #FFA500; font-size: 14pt; font-weight: bold;')
-        else:
-            self.status_label.setText(f'✅ Server Active - {client_count} clients connected')
-        
-        self.statusbar.showMessage(f"⚠️ Client disconnected: {client_ip}")
-    
-    @pyqtSlot(dict)
-    def add_sent_file(self, send_info):
-        """Add sent file record"""
-        size_mb = send_info['file_size'] / (1024 * 1024)
-        file_text = f"📤 {send_info['file_name']} → {send_info['client_hostname']} ({size_mb:.1f}MB) ✅"
-        self.distribution_list.addItem(file_text)
-        
-        self.statusbar.showMessage(f"📤 Sent: {send_info['file_name']} to {send_info['client_hostname']}")
-    
-    @pyqtSlot(str, int)
-    def update_distribution_status(self, file_name, successful_sends):
-        """Update distribution status"""
-        self.statusbar.showMessage(f"✅ Distribution complete: {file_name} sent to {successful_sends} clients")
-    
-    def refresh_clients(self):
-        """Refresh client list"""
-        self.client_list.clear()
-        
-        # Re-add connected clients
-        for client in self.network_server.clients.values():
-            if client['connected']:
-                self.add_client(client)
-        
-        self.statusbar.showMessage('🔄 Client list refreshed')
-    
-    def add_files(self):
-        """Add files for distribution"""
-        file_paths, _ = QFileDialog.getOpenFileNames(
-            self, 
-            'Select Files to Distribute',
-            '',
-            'All Files (*.*)'
-        )
-        
+from ui.server_ui import ServerWindow
+
+class ServerController:
+    def __init__(self, network_server, ui):
+        self.network_server = network_server
+        self.ui = ui
+        self.connect_signals()
+
+    def connect_signals(self):
+        # Connect network signals to UI slots
+        self.network_server.client_connected.connect(self.update_client_list)
+        self.network_server.client_disconnected.connect(self.update_client_list)
+
+        # Connect UI signals to controller slots
+        self.ui.select_files_button.clicked.connect(self.select_files)
+        self.ui.send_files_button.clicked.connect(self.send_files)
+        self.ui.back_to_home_button.clicked.connect(self.ui.show_home)
+        self.ui.refresh_clients_button.clicked.connect(self.update_client_list)
+        self.ui.add_more_files_button.clicked.connect(self.select_files)
+        self.ui.remove_selected_files_button.clicked.connect(self.remove_selected_files)
+        self.ui.select_all_files_button.clicked.connect(self.select_all_files)
+        self.ui.send_to_all_button.clicked.connect(self.send_to_all_clients)
+        self.network_server.file_progress.connect(self.update_transfer_progress)
+        self.network_server.status_update_received.connect(self.update_transfer_status)
+        self.ui.client_list_widget.itemClicked.connect(self.show_client_profile)
+
+    def show_client_profile(self, item):
+        ip = item.text().split('(')[1].replace(')', '')
+        if ip in self.network_server.clients:
+            client_info = self.network_server.clients[ip]
+            profile_text = f"""
+            <b>Client Profile</b><br>
+            --------------------<br>
+            <b>Hostname:</b> {client_info.get('hostname', 'N/A')}<br>
+            <b>IP Address:</b> {client_info.get('ip', 'N/A')}<br>
+            <b>Last Seen:</b> {time.ctime(client_info.get('last_seen', 0))}<br>
+            <b>Files Sent:</b> {client_info.get('files_sent', 0)}
+            """
+            QMessageBox.information(self.ui, "Client Profile", profile_text)
+
+    def update_client_list(self):
+        self.ui.client_list_widget.clear()
+        connected_clients = self.network_server.get_connected_clients()
+        for client in connected_clients:
+            item = QListWidgetItem(f"{client['hostname']} ({client['ip']})")
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Unchecked)
+            self.ui.client_list_widget.addItem(item)
+        self.ui.connected_clients_label.setText(str(len(connected_clients)))
+        self.ui.connection_status_label.setText("Connected" if connected_clients else "Not Connected")
+
+    def select_files(self):
+        file_paths, _ = QFileDialog.getOpenFileNames(self.ui, "Select Files to Share")
         if file_paths:
             self.network_server.add_files_for_distribution(file_paths)
-            
-            for file_path in file_paths:
-                file_name = os.path.basename(file_path)
-                size_mb = os.path.getsize(file_path) / (1024 * 1024)
-                category = self.network_server._get_file_category(file_path)
-                
-                category_icons = {
-                    'installer': '📦',
-                    'document': '📄', 
-                    'media': '🎵',
-                    'archive': '📁',
-                    'other': '📄'
-                }
-                
-                icon = category_icons.get(category, '📄')
-                file_text = f"{icon} {file_name} ({size_mb:.1f}MB) - {category} [READY]"
-                self.distribution_list.addItem(file_text)
-            
-            self.statusbar.showMessage(f"➕ Added {len(file_paths)} files for distribution")
-    
-    def send_to_selected(self):
-        """Send files to selected clients"""
+            self.update_selected_files_list()
+            self.ui.show_after_selection()
+
+    def update_selected_files_list(self):
+        self.ui.selected_files_list_widget.clear()
+        for file_info in self.network_server.files_to_distribute:
+            item = QListWidgetItem(f"{file_info['name']} ({file_info['size'] / 1024 / 1024:.2f} MB)")
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Unchecked)
+            self.ui.selected_files_list_widget.addItem(item)
+
+    def remove_selected_files(self):
+        items_to_remove = []
+        for i in range(self.ui.selected_files_list_widget.count()):
+            item = self.ui.selected_files_list_widget.item(i)
+            if item.checkState() == Qt.Checked:
+                items_to_remove.append(i)
+
+        # Remove in reverse order to avoid index shifting issues
+        for i in sorted(items_to_remove, reverse=True):
+            self.network_server.files_to_distribute.pop(i)
+            self.ui.selected_files_list_widget.takeItem(i)
+
+    def select_all_files(self):
+        for i in range(self.ui.selected_files_list_widget.count()):
+            item = self.ui.selected_files_list_widget.item(i)
+            item.setCheckState(Qt.Checked)
+
+    def send_files(self):
         selected_clients = []
-        for item in self.client_list.selectedItems():
-            text = item.text()
-            # Extract IP from item text
-            ip_start = text.find('(') + 1
-            ip_end = text.find(')')
-            if ip_start > 0 and ip_end > ip_start:
-                client_ip = text[ip_start:ip_end]
-                if client_ip in self.network_server.clients and self.network_server.clients[client_ip]['connected']:
-                    selected_clients.append(client_ip)
+        for i in range(self.ui.client_list_widget.count()):
+            item = self.ui.client_list_widget.item(i)
+            if item.checkState() == Qt.Checked:
+                # Assuming the text is "hostname (ip)"
+                ip = item.text().split('(')[1].replace(')', '')
+                selected_clients.append(ip)
         
-        if selected_clients and self.network_server.files_to_distribute:
-            self.network_server.distribute_files_to_clients(selected_clients)
-            self.statusbar.showMessage(f"🚀 Distributing files to {len(selected_clients)} selected clients...")
-        else:
-            self.statusbar.showMessage("⚠️ Select connected clients and add files first")
-    
-    def send_to_all(self):
-        """Send files to all connected clients"""
-        connected_clients = [ip for ip, client in self.network_server.clients.items() if client['connected']]
-        
-        if connected_clients and self.network_server.files_to_distribute:
-            self.network_server.distribute_files_to_clients(connected_clients)
-            self.statusbar.showMessage(f"🚀 Distributing files to all {len(connected_clients)} clients...")
-        else:
-            self.statusbar.showMessage("⚠️ No connected clients or files to distribute")
-    
-    def distribute_files(self):
-        """Distribute files (same as send to all)"""
-        self.send_to_all()
-    
-    def clear_distribution_list(self):
-        """Clear the distribution files list"""
-        reply = QMessageBox.question(
-            self, 
-            'Clear Distribution List', 
-            'Are you sure you want to clear the distribution files list?\n\nNote: This will remove all files from the distribution queue.',
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
-        
-        if reply == QMessageBox.Yes:
-            self.distribution_list.clear()
-            self.network_server.files_to_distribute.clear()
-            self.statusbar.showMessage('🧹 Distribution list cleared')
-    
-    def cancel_current_transfer(self):
-        """Cancel any ongoing file transfers"""
-        reply = QMessageBox.question(
-            self, 
-            'Cancel Transfer', 
-            'Are you sure you want to cancel the current file transfer?\n\nNote: This will stop any ongoing file distribution.',
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
-        
-        if reply == QMessageBox.Yes:
-            # Set a flag to cancel transfers (would need to be implemented in transfer logic)
-            self.statusbar.showMessage('❌ File transfer cancellation requested')
-            # Note: Full implementation would require adding cancellation logic to the transfer threads
-    
-    def closeEvent(self, event):
-        """Clean shutdown"""
-        self.network_server.stop_server()
-        event.accept()
+        if not selected_clients:
+            QMessageBox.warning(self.ui, "No Clients Selected", "Please select at least one client to send files to.")
+            return
+
+        if not self.network_server.files_to_distribute:
+            QMessageBox.warning(self.ui, "No Files Selected", "Please select files to distribute.")
+            return
+
+        self.ui.transfer_list_widget.clear()
+        self.transfer_widgets = {}
+
+        for file_info in self.network_server.files_to_distribute:
+            for client_ip in selected_clients:
+                widget = FileTransferWidget(file_info['name'], file_info['size'])
+                item = QListWidgetItem(self.ui.transfer_list_widget)
+                item.setSizeHint(widget.sizeHint())
+                self.ui.transfer_list_widget.addItem(item)
+                self.ui.transfer_list_widget.setItemWidget(item, widget)
+                self.transfer_widgets[(file_info['name'], client_ip)] = widget
+
+        self.network_server.distribute_files_to_clients(selected_clients)
+        self.ui.show_while_sharing()
+
+    def update_transfer_progress(self, file_name, client_ip, percentage):
+        if (file_name, client_ip) in self.transfer_widgets:
+            widget = self.transfer_widgets[(file_name, client_ip)]
+            widget.set_progress(percentage)
+            widget.set_status(f"Sending to {client_ip}...", "orange")
+            if percentage >= 100:
+                widget.set_status("Sent", "lightgreen")
+
+    def update_transfer_status(self, file_name, client_ip, status):
+        if (file_name, client_ip) in self.transfer_widgets:
+            widget = self.transfer_widgets[(file_name, client_ip)]
+            widget.set_status(status, "lightblue")
+
+    def send_to_all_clients(self):
+        self.network_server.distribute_files_to_clients()
+        self.ui.show_while_sharing()
 
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName('LAN Install Working Server v2.0')
     
-    print('🚀 Starting Working LAN Install Server v2.0...')
-    print('✅ Real client connections enabled')
-    print('✅ Working file distribution enabled')
-    print('✅ Multi-client support enabled')
-    print('✅ Professional UI with real status updates')
+    network_server = WorkingNetworkServer()
+    network_server.start_server()
     
-    window = WorkingServerWindow()
-    window.show()
+    main_window = ServerWindow(network_server)
+    controller = ServerController(network_server, main_window)
     
-    return app.exec_()
+    main_window.show()
+    
+    sys.exit(app.exec_())
 
 
 if __name__ == '__main__':

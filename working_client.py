@@ -15,6 +15,9 @@ from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5.QtGui import *
 
+from network import protocol
+from network.transfer import FileReceiver
+from ui.custom_widgets import FileTransferWidget
 # Import dynamic installer
 from utils.dynamic_installer import DynamicInstaller
 
@@ -24,6 +27,7 @@ class WorkingNetworkClient(QObject):
     server_found = pyqtSignal(dict)
     connection_status = pyqtSignal(str, bool)  # server_ip, connected
     file_received = pyqtSignal(dict)
+    file_progress = pyqtSignal(str, str, float) # file_name, server_ip, percentage
     
     def __init__(self):
         super().__init__()
@@ -111,94 +115,58 @@ class WorkingNetworkClient(QObject):
         print(f"Client started on {self.local_ip}")
     
     def _start_file_receiver(self):
-        """Start file receiver server on port 5002"""
+        """Start file receiver server on the designated file transfer port."""
         try:
             self.file_receiver_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.file_receiver_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.file_receiver_socket.bind(('0.0.0.0', 5002))
+            self.file_receiver_socket.bind(('0.0.0.0', protocol.FILE_TRANSFER_PORT))
             self.file_receiver_socket.listen(5)
             
-            print("File receiver listening on port 5002")
+            print(f"File receiver listening on port {protocol.FILE_TRANSFER_PORT}")
             
             while self.running:
                 try:
                     self.file_receiver_socket.settimeout(1.0)
                     client_sock, addr = self.file_receiver_socket.accept()
-                    threading.Thread(target=self._handle_file_transfer, 
-                                   args=(client_sock, addr), daemon=True).start()
+                    
+                    # Define completion callback
+                    def on_complete(file_name, status, file_path):
+                        print(f"File '{file_name}' from {addr[0]} reception status: {status}")
+                        if status == 'completed':
+                            file_size = os.path.getsize(file_path)
+                            file_info = {
+                                'name': file_name,
+                                'path': str(file_path),
+                                'size': file_size,
+                                'category': 'unknown', # Category can be refined
+                                'sender': addr[0],
+                                'received_time': time.time()
+                            }
+                            self.file_received.emit(file_info)
+                            # Auto-install if it's an installer
+                            if Path(file_name).suffix.lower() in ['.exe', '.msi']:
+                                threading.Thread(target=self._auto_install_immediately, 
+                                               args=(str(file_path), file_name), daemon=True).start()
+
+                    # Create and start the FileReceiver thread
+                    receiver_thread = FileReceiver(
+                        sock=client_sock,
+                        addr=addr,
+                        received_files_dir=str(self.received_files_path),
+                        completion_callback=on_complete,
+                        progress_callback=self.file_progress.emit
+                    )
+                    receiver_thread.start()
+
                 except socket.timeout:
                     continue
-                except:
+                except Exception as e:
+                    if self.running:
+                        print(f"File receiver loop error: {e}")
                     break
                     
         except Exception as e:
-            print(f"File receiver error: {e}")
-    
-    def _handle_file_transfer(self, sock, addr):
-        """Handle incoming file transfer"""
-        try:
-            # Receive file metadata
-            metadata_line = sock.recv(1024).decode('utf-8').strip()
-            metadata = json.loads(metadata_line)
-            
-            file_name = metadata['file_name']
-            file_size = metadata['file_size']
-            file_category = metadata.get('category', 'other')
-            
-            print(f"Receiving file: {file_name} ({file_size} bytes)")
-            
-            # Create storage directory relative to executable location
-            base_dir = self.received_files_path
-            if file_category == 'installer':
-                storage_dir = base_dir / "installers"
-            elif file_category == 'document':
-                storage_dir = base_dir / "files" / "documents"
-            elif file_category == 'media':
-                storage_dir = base_dir / "files" / "media"
-            elif file_category == 'archive':
-                storage_dir = base_dir / "files" / "archives"
-            else:
-                storage_dir = base_dir / "files" / "others"
-            
-            storage_dir.mkdir(parents=True, exist_ok=True)
-            file_path = storage_dir / file_name
-            
-            # Receive file data
-            bytes_received = 0
-            with open(file_path, 'wb') as f:
-                while bytes_received < file_size:
-                    chunk = sock.recv(min(2048576, file_size - bytes_received))  # 2MB chunks
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    bytes_received += len(chunk)
-            
-            sock.close()
-            
-            # Emit file received signal
-            file_info = {
-                'name': file_name,
-                'path': str(file_path),
-                'size': file_size,
-                'category': file_category,
-                'sender': addr[0],
-                'received_time': time.time()
-            }
-            
-            self.file_received.emit(file_info)
-            
-            # Auto-install if installer - IMMEDIATE SILENT INSTALLATION
-            if file_category == 'installer':
-                # Silent installation - no console output during normal operation
-                threading.Thread(target=self._auto_install_immediately, 
-                               args=(str(file_path), file_name), daemon=True).start()
-            
-        except Exception as e:
-            print(f"File transfer error: {e}")
-            try:
-                sock.close()
-            except:
-                pass
+            print(f"File receiver startup error: {e}")
     
     def _discover_servers(self):
         """Discover and connect to servers"""
@@ -213,12 +181,12 @@ class WorkingNetworkClient(QObject):
                 message = json.dumps({
                     'type': 'client_discovery',
                     'client_ip': self.local_ip,
-                    'client_port': 5002,
+                    'client_port': protocol.FILE_TRANSFER_PORT,
                     'timestamp': time.time()
                 }).encode('utf-8')
                 
                 base_ip = '.'.join(self.local_ip.split('.')[:-1])
-                sock.sendto(message, (f"{base_ip}.255", 5001))
+                sock.sendto(message, (f"{base_ip}.255", protocol.DISCOVERY_PORT))
                 
                 # Listen for server responses
                 start_time = time.time()
@@ -232,7 +200,7 @@ class WorkingNetworkClient(QObject):
                             server_info = {
                                 'ip': server_ip,
                                 'hostname': response.get('hostname', f'Server-{server_ip.split(".")[-1]}'),
-                                'port': response.get('port', 5000),
+                                'port': response.get('port', protocol.COMMAND_PORT),
                                 'last_seen': time.time()
                             }
                             
@@ -268,7 +236,7 @@ class WorkingNetworkClient(QObject):
             registration = json.dumps({
                 'type': 'client_register',
                 'client_ip': self.local_ip,
-                'client_port': 5002,
+                'client_port': protocol.FILE_TRANSFER_PORT,
                 'hostname': socket.gethostname()
             }).encode('utf-8')
             
@@ -290,8 +258,8 @@ class WorkingNetworkClient(QObject):
     
     def _keep_connection_alive(self, server_ip, sock):
         """Keep connection alive with server"""
-        try:
-            while self.running and server_ip in self.connected_servers:
+        while self.running and server_ip in self.connected_servers:
+            try:
                 # Send heartbeat
                 heartbeat = json.dumps({
                     'type': 'heartbeat',
@@ -299,15 +267,17 @@ class WorkingNetworkClient(QObject):
                     'timestamp': time.time()
                 }).encode('utf-8')
                 
-                try:
-                    sock.send(heartbeat + b'\n')
-                    time.sleep(10)  # Heartbeat every 10 seconds
-                except:
-                    break
-                    
-        except Exception as e:
-            print(f"Connection to {server_ip} lost: {e}")
-        finally:
+                sock.sendall(heartbeat + b'\n')
+                time.sleep(10)  # Heartbeat every 10 seconds
+            except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError) as e:
+                print(f"Connection to {server_ip} lost: {e}")
+                break
+            except Exception as e:
+                print(f"Error in keep-alive for {server_ip}: {e}")
+                break
+        
+        # Cleanup after connection is lost
+        if server_ip in self.connected_servers:
             if server_ip in self.connected_servers:
                 del self.connected_servers[server_ip]
             self.connection_status.emit(server_ip, False)
@@ -315,6 +285,20 @@ class WorkingNetworkClient(QObject):
                 sock.close()
             except:
                 pass
+    
+    def send_status_update(self, file_name, status):
+        """Send a status update to all connected servers."""
+        for server_ip, sock in self.connected_servers.items():
+            try:
+                message = {
+                    'type': protocol.MSG_TYPE_STATUS_UPDATE,
+                    'file_name': file_name,
+                    'status': status,
+                    'client_ip': self.local_ip
+                }
+                sock.sendall(json.dumps(message).encode('utf-8') + b'\n')
+            except Exception as e:
+                print(f"Failed to send status update to {server_ip}: {e}")
     
     def _auto_install_immediately(self, installer_path, file_name):
         """Immediately install received executable with ONE ATTEMPT ONLY (completely silent)"""
@@ -363,21 +347,21 @@ class WorkingNetworkClient(QObject):
                 # Any error means check manually
                 installation_result = 'check_manually'
             
-            # Update dynamic installer tracking based on result
+            # Update dynamic installer tracking and send status update
             if installation_result == 'success':
-                # Mark as successfully installed in dynamic installer
                 self.dynamic_installer.mark_file_as_processed(Path(installer_path), "installed")
+                self.send_status_update(file_name, "Installed Successfully")
             elif installation_result == 'manual_setup_needed':
-                # Mark as requiring manual setup - do not retry
                 self.dynamic_installer.mark_file_as_processed(Path(installer_path), "manual_setup_needed")
+                self.send_status_update(file_name, "Manual Setup Needed")
                 print(f"🔧 {file_name} - Manual setup needed")
             elif installation_result == 'check_manually':
-                # Mark as needing manual check - do not retry
                 self.dynamic_installer.mark_file_as_processed(Path(installer_path), "check_manually")
+                self.send_status_update(file_name, "Check Manually")
                 print(f"⚠️ {file_name} - Check and set up manually")
             else:
-                # Mark as failed in dynamic installer
                 self.dynamic_installer.mark_file_as_processed(Path(installer_path), "failed")
+                self.send_status_update(file_name, "Installation Failed")
                 
         except Exception as e:
             print(f"💥 Critical error during auto-installation of {file_name}: {e}")
@@ -424,347 +408,131 @@ class WorkingNetworkClient(QObject):
                 pass
 
 
-class WorkingClientWindow(QMainWindow):
-    """Working client window with real connections"""
-    
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle('🚀 LAN Install Working Client v2.0')
-        self.setGeometry(100, 100, 1200, 800)
-        
-        # Professional styling
-        self.setStyleSheet("""
-            QMainWindow { 
-                background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
-                                          stop: 0 #1e1e1e, stop: 1 #2d2d2d);
-                color: white; 
-            }
-            QPushButton { 
-                background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
-                                          stop: 0 #4a90e2, stop: 1 #357abd);
-                border: none; border-radius: 12px; padding: 15px 25px; 
-                font-weight: bold; font-size: 12pt; color: white;
-            }
-            QPushButton:hover { 
-                background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
-                                          stop: 0 #5ba0f2, stop: 1 #4682cd);
-            }
-            QListWidget { 
-                background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1,
-                                          stop: 0 #3a3a3a, stop: 1 #404040);
-                border: 2px solid #555; border-radius: 12px; padding: 12px;
-                font-size: 11pt;
-            }
-            QLabel { color: white; }
-            QProgressBar {
-                border: 2px solid #555; border-radius: 12px; text-align: center;
-                background: #3a3a3a; color: white; font-weight: bold; height: 30px;
-            }
-            QProgressBar::chunk {
-                background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0,
-                                          stop: 0 #4a90e2, stop: 1 #5ba0f2);
-                border-radius: 10px;
-            }
-        """)
-        
-        # Initialize network client
-        self.network_client = WorkingNetworkClient()
-        
-        # Connect signals
-        self.network_client.server_found.connect(self.add_server)
+from ui.client_ui import ClientWindow
+
+class ClientController:
+    def __init__(self, network_client, ui):
+        self.network_client = network_client
+        self.ui = ui
+        self.transfer_widgets = {}
+        self.connect_signals()
+
+    def connect_signals(self):
+        # Connect network signals to UI slots
+        self.network_client.server_found.connect(self.update_server_list)
         self.network_client.connection_status.connect(self.update_connection_status)
         self.network_client.file_received.connect(self.add_received_file)
+        self.network_client.file_progress.connect(self.update_transfer_progress)
+
+        # Connect UI signals to controller slots
+        self.ui.refresh_servers_button.clicked.connect(self.refresh_servers)
+        self.ui.connect_to_selected_button.clicked.connect(self.connect_to_selected)
+        self.ui.open_folder_button.clicked.connect(self.open_received_folder)
+        self.ui.clear_list_button.clicked.connect(self.clear_received_list)
+        self.ui.server_list_widget.itemClicked.connect(self.show_server_profile)
+        self.ui.manual_connect_button.clicked.connect(self.connect_manual)
+
+    def show_server_profile(self, item):
+        ip = item.text().split('(')[1].replace(')', '').split(' ')[0]
+        if ip in self.network_client.servers:
+            server_info = self.network_client.servers[ip]
+            profile_text = f"""
+            <b>Server Profile</b><br>
+            --------------------<br>
+            <b>Hostname:</b> {server_info.get('hostname', 'N/A')}<br>
+            <b>IP Address:</b> {server_info.get('ip', 'N/A')}<br>
+            <b>Last Seen:</b> {time.ctime(server_info.get('last_seen', 0))}
+            """
+            QMessageBox.information(self.ui, "Server Profile", profile_text)
+
+    def update_server_list(self, server_info):
+        # Avoid duplicates
+        for i in range(self.ui.server_list_widget.count()):
+            item = self.ui.server_list_widget.item(i)
+            if server_info['ip'] in item.text():
+                return
         
-        # Add installer status check timer
-        self.status_timer = QTimer()
-        self.status_timer.timeout.connect(self._update_installer_status)
-        self.status_timer.start(10000)  # Check every 10 seconds
-        
-        self.init_ui()
-        
-        # Start network client
-        self.network_client.start_discovery()
-    
-    def init_ui(self):
-        """Initialize UI"""
-        central = QWidget()
-        self.setCentralWidget(central)
-        layout = QVBoxLayout()
-        
-        # Header
-        header = QLabel('🚀 LAN Install Working Client v2.0')
-        header.setAlignment(Qt.AlignCenter)
-        header.setFont(QFont('Segoe UI', 18, QFont.Bold))
-        header.setStyleSheet('color: #4a90e2; margin: 20px;')
-        layout.addWidget(header)
-        
-        # Status
-        self.status_label = QLabel('🔄 Starting client - Scanning for servers...')
-        self.status_label.setAlignment(Qt.AlignCenter)
-        self.status_label.setStyleSheet('color: #FFA500; font-size: 14pt; font-weight: bold;')
-        layout.addWidget(self.status_label)
-        
-        # Main content
-        content_layout = QHBoxLayout()
-        
-        # Left panel - Servers
-        left_panel = QWidget()
-        left_layout = QVBoxLayout()
-        
-        servers_title = QLabel('🖥️ Available Servers (Live)')
-        servers_title.setFont(QFont('Segoe UI', 14, QFont.Bold))
-        servers_title.setStyleSheet('color: #4a90e2; margin: 10px;')
-        left_layout.addWidget(servers_title)
-        
-        self.server_list = QListWidget()
-        left_layout.addWidget(self.server_list)
-        
-        server_buttons = QHBoxLayout()
-        self.refresh_btn = QPushButton('🔄 Refresh')
-        self.connect_btn = QPushButton('🔗 Connect')
-        self.refresh_btn.clicked.connect(self.refresh_servers)
-        self.connect_btn.clicked.connect(self.connect_to_server)
-        server_buttons.addWidget(self.refresh_btn)
-        server_buttons.addWidget(self.connect_btn)
-        left_layout.addLayout(server_buttons)
-        
-        left_panel.setLayout(left_layout)
-        content_layout.addWidget(left_panel)
-        
-        # Right panel - Files
-        right_panel = QWidget()
-        right_layout = QVBoxLayout()
-        
-        files_title = QLabel('📁 Received Files (Live)')
-        files_title.setFont(QFont('Segoe UI', 14, QFont.Bold))
-        files_title.setStyleSheet('color: #4a90e2; margin: 10px;')
-        right_layout.addWidget(files_title)
-        
-        self.file_list = QListWidget()
-        right_layout.addWidget(self.file_list)
-        
-        file_buttons = QHBoxLayout()
-        self.open_folder_btn = QPushButton('📂 Open Folder')
-        self.install_btn = QPushButton('⚡ Install Selected')
-        self.clear_files_btn = QPushButton('🧹 Clear List')
-        self.cancel_monitoring_btn = QPushButton('🛑 Stop Monitoring')
-        
-        self.open_folder_btn.clicked.connect(self.open_received_folder)
-        self.clear_files_btn.clicked.connect(self.clear_received_files)
-        self.cancel_monitoring_btn.clicked.connect(self.toggle_monitoring)
-        
-        file_buttons.addWidget(self.open_folder_btn)
-        file_buttons.addWidget(self.install_btn)
-        file_buttons.addWidget(self.clear_files_btn)
-        file_buttons.addWidget(self.cancel_monitoring_btn)
-        right_layout.addLayout(file_buttons)
-        
-        right_panel.setLayout(right_layout)
-        content_layout.addWidget(right_panel)
-        
-        layout.addLayout(content_layout)
-        
-        # Progress bar
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setValue(0)
-        self.progress_bar.setFormat('Starting client...')
-        layout.addWidget(self.progress_bar)
-        
-        central.setLayout(layout)
-        
-        # Status bar
-        self.statusbar = self.statusBar()
-        self.statusbar.showMessage('🚀 LAN Install Working Client v2.0 - Ready')
-        
-        # Add installer status to status bar
-        self.installer_status_label = QLabel("Dynamic Installer: Ready")
-        self.installer_status_label.setStyleSheet("color: #4CAF50; font-weight: bold;")
-        self.statusbar.addPermanentWidget(self.installer_status_label)
-        self.setStatusBar(self.statusbar)
-    
-    @pyqtSlot(dict)
-    def add_server(self, server):
-        """Add discovered server"""
-        server_text = f"🖥️ {server['hostname']} ({server['ip']}) - LAN Install Server [FOUND]"
-        self.server_list.addItem(server_text)
-        self.statusbar.showMessage(f"✅ Found server: {server['hostname']} at {server['ip']}")
-    
-    @pyqtSlot(str, bool)
+        item = QListWidgetItem(f"{server_info['hostname']} ({server_info['ip']})")
+        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+        item.setCheckState(Qt.Unchecked)
+        self.ui.server_list_widget.addItem(item)
+
     def update_connection_status(self, server_ip, connected):
-        """Update connection status"""
-        # Update server list items
-        for i in range(self.server_list.count()):
-            item = self.server_list.item(i)
+        self.ui.connection_status_label.setText("Connected" if connected else "Not Connected")
+        # You can also update the server list item to show connection status
+        for i in range(self.ui.server_list_widget.count()):
+            item = self.ui.server_list_widget.item(i)
             if server_ip in item.text():
-                text = item.text()
                 if connected:
-                    new_text = text.replace('[FOUND]', '[CONNECTED]').replace('[DISCONNECTED]', '[CONNECTED]')
-                    item.setText(new_text)
-                    item.setBackground(QColor(76, 175, 80, 50))  # Green background
+                    item.setText(f"{item.text().split(' ')[0]} ({server_ip}) [Connected]")
+                    item.setForeground(QColor("lightgreen"))
                 else:
-                    new_text = text.replace('[CONNECTED]', '[DISCONNECTED]').replace('[FOUND]', '[DISCONNECTED]')
-                    item.setText(new_text)
-                    item.setBackground(QColor(244, 67, 54, 50))  # Red background
+                    item.setText(f"{item.text().split(' ')[0]} ({server_ip}) [Disconnected]")
+                    item.setForeground(QColor("lightcoral"))
                 break
-        
-        if connected:
-            self.status_label.setText('✅ Connected to server - Ready to receive files')
-            self.status_label.setStyleSheet('color: #4CAF50; font-size: 14pt; font-weight: bold;')
-            self.progress_bar.setValue(100)
-            self.progress_bar.setFormat('Connected and ready')
-            self.statusbar.showMessage(f'✅ Connected to server: {server_ip}')
-        else:
-            self.statusbar.showMessage(f'⚠️ Disconnected from server: {server_ip}')
-    
-    @pyqtSlot(dict)
+
     def add_received_file(self, file_info):
-        """Add received file"""
-        category_icons = {
-            'installer': '📦',
-            'document': '📄', 
-            'media': '🎵',
-            'archive': '📁',
-            'other': '📄'
-        }
+        file_name = file_info['name']
+        server_ip = file_info['sender']
         
-        icon = category_icons.get(file_info['category'], '📄')
-        size_mb = file_info['size'] / (1024 * 1024)
-        
-        file_text = f"{icon} {file_info['name']} ({size_mb:.1f}MB) - {file_info['category']} ✅"
-        self.file_list.addItem(file_text)
-        
-        self.statusbar.showMessage(f"📥 Received: {file_info['name']} from {file_info['sender']}")
-        
-        if file_info['category'] == 'installer':
-            self.statusbar.showMessage(f"🚀 Processing with Dynamic Installer: {file_info['name']}")
-            # Start a timer to check installation status
-            QTimer.singleShot(2000, lambda: self._check_installer_status(file_info['name']))
-    
+        widget = FileTransferWidget(file_name, file_info['size'])
+        item = QListWidgetItem(self.ui.receiving_list_widget)
+        item.setSizeHint(widget.sizeHint())
+        self.ui.receiving_list_widget.addItem(item)
+        self.ui.receiving_list_widget.setItemWidget(item, widget)
+        self.transfer_widgets[(file_name, server_ip)] = widget
+
+    def update_transfer_progress(self, file_name, server_ip, percentage):
+        if (file_name, server_ip) in self.transfer_widgets:
+            widget = self.transfer_widgets[(file_name, server_ip)]
+            widget.set_progress(percentage)
+            widget.set_status(f"Receiving from {server_ip}...", "orange")
+            if percentage >= 100:
+                widget.set_status("Completed", "lightgreen")
+
     def refresh_servers(self):
-        """Refresh server list"""
-        self.server_list.clear()
+        self.ui.server_list_widget.clear()
         self.network_client.servers.clear()
-        self.statusbar.showMessage('🔄 Refreshing server list...')
-    
-    def connect_to_server(self):
-        """Connect to selected server"""
-        current_item = self.server_list.currentItem()
-        if current_item:
-            text = current_item.text()
-            # Extract IP from text
-            ip_start = text.find('(') + 1
-            ip_end = text.find(')')
-            if ip_start > 0 and ip_end > ip_start:
-                server_ip = text[ip_start:ip_end]
-                if server_ip in self.network_client.servers:
-                    server_info = self.network_client.servers[server_ip]
-                    self.network_client._connect_to_server(server_ip, server_info['port'])
-    
-    def _check_installer_status(self, file_name):
-        """Check the status of installer processing"""
-        try:
-            # Get installation status from dynamic installer
-            status = self.network_client.dynamic_installer.get_installation_status()
-            
-            # Find the specific file in the processed files
-            for file_info in status.get('files', []):
-                if file_info.get('name') == file_name:
-                    file_status = file_info.get('status', 'unknown')
-                    if file_status == 'installed':
-                        self.statusbar.showMessage(f"✅ Successfully installed: {file_name}")
-                    elif file_status == 'failed':
-                        self.statusbar.showMessage(f"❌ Installation failed: {file_name}")
-                    elif file_status == 'error':
-                        self.statusbar.showMessage(f"⚠️ Installation error: {file_name}")
-                    break
-        except Exception as e:
-            print(f"Error checking installer status: {e}")
-    
-    def open_received_folder(self):
-        """Open received files folder"""
-        try:
-            folder_path = self.network_client.received_files_path
-            if folder_path.exists():
-                os.startfile(str(folder_path))
-            else:
-                folder_path.mkdir(parents=True, exist_ok=True)
-                os.startfile(str(folder_path))
-        except:
-            try:
-                subprocess.run(['explorer', str(self.network_client.received_files_path)])
-            except:
-                pass
-    
-    def get_installer_status(self):
-        """Get current dynamic installer status"""
-        try:
-            return self.network_client.dynamic_installer.get_installation_status()
-        except:
-            return {"total_processed": 0, "files": []}
-    
-    def _update_installer_status(self):
-        """Update installer status display"""
-        try:
-            status = self.get_installer_status()
-            total_processed = status.get('total_processed', 0)
-            self.installer_status_label.setText(f"Dynamic Installer: {total_processed} files processed")
-        except:
-            pass
-    
-    def clear_received_files(self):
-        """Clear the received files list"""
-        reply = QMessageBox.question(
-            self, 
-            'Clear Files List', 
-            'Are you sure you want to clear the received files list?\n\nNote: This only clears the UI list, not the actual files.',
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
+        # The discovery thread will find servers again automatically
+
+    def connect_to_selected(self):
+        for i in range(self.ui.server_list_widget.count()):
+            item = self.ui.server_list_widget.item(i)
+            if item.checkState() == Qt.Checked:
+                ip = item.text().split('(')[1].replace(')', '').split(' ')[0]
+                if ip in self.network_client.servers:
+                    server_info = self.network_client.servers[ip]
+                    self.network_client._connect_to_server(server_info['ip'], server_info['port'])
+
+    def connect_manual(self):
+        ip = self.ui.manual_ip_input.text().strip()
+        if not ip:
+            QMessageBox.warning(self.ui, "Invalid IP", "Please enter a valid IP address.")
+            return
         
-        if reply == QMessageBox.Yes:
-            self.file_list.clear()
-            self.statusbar.showMessage('🧹 Received files list cleared')
-    
-    def toggle_monitoring(self):
-        """Toggle monitoring on/off"""
-        if self.network_client.dynamic_installer._monitoring:
-            # Stop monitoring
-            self.network_client.dynamic_installer.stop_monitoring()
-            self.cancel_monitoring_btn.setText('▶️ Start Monitoring')
-            self.cancel_monitoring_btn.setStyleSheet(
-                "background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1, stop: 0 #4CAF50, stop: 1 #45a049);"
-            )
-            self.statusbar.showMessage('🛑 Monitoring stopped - files will not auto-install')
-        else:
-            # Start monitoring
-            self.network_client.dynamic_installer.start_monitoring(check_interval=10)
-            self.cancel_monitoring_btn.setText('🛑 Stop Monitoring')
-            self.cancel_monitoring_btn.setStyleSheet(
-                "background: qlineargradient(x1: 0, y1: 0, x2: 0, y2: 1, stop: 0 #f44336, stop: 1 #d32f2f);"
-            )
-            self.statusbar.showMessage('▶️ Monitoring started - files will auto-install immediately')
-    
-    def closeEvent(self, event):
-        """Clean shutdown"""
-        self.status_timer.stop()
-        self.network_client.stop()
-        event.accept()
+        # Use default command port
+        port = protocol.COMMAND_PORT
+        self.network_client._connect_to_server(ip, port)
+
+    def open_received_folder(self):
+        os.startfile(self.network_client.received_files_path)
+
+    def clear_received_list(self):
+        self.ui.receiving_list_widget.clear()
 
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName('LAN Install Working Client v2.0')
     
-    print('🚀 Starting Working LAN Install Client v2.0...')
-    print('✅ Real server connections enabled')
-    print('✅ Working file reception enabled')
-    print('✅ Silent auto-installation enabled')
-    print('✅ Professional UI with real status updates')
+    network_client = WorkingNetworkClient()
+    network_client.start_discovery()
     
-    window = WorkingClientWindow()
-    window.show()
+    main_window = ClientWindow(network_client)
+    controller = ClientController(network_client, main_window)
     
-    return app.exec_()
+    main_window.show()
+    
+    sys.exit(app.exec_())
 
 
 if __name__ == '__main__':
