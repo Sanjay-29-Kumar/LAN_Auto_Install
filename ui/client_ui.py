@@ -16,12 +16,35 @@ class ClientWindow(QMainWindow):
         self.setWindowTitle("LAN Auto Install - Client")
         self.setGeometry(100, 100, 900, 700)
 
-        self.main_widget = self.create_main_widget()
-        self.setCentralWidget(self.main_widget)
+        self.stacked_widget = QStackedWidget()
+        
+        self.home_widget = self.create_home_widget()
+        self.receiving_widget = self.create_receiving_widget()
+
+        self.stacked_widget.addWidget(self.home_widget)
+        self.stacked_widget.addWidget(self.receiving_widget)
+
+        # Add a global back/home button
+        self.global_back_home_button = QPushButton("Home / Back")
+        self.global_back_home_button.setFixedSize(100, 30)
+        self.global_back_home_button.clicked.connect(self.show_home)
+
+        # Main layout to hold stacked widget and global button
+        main_container_widget = QWidget()
+        main_container_layout = QVBoxLayout(main_container_widget)
+        
+        # Top bar for global buttons/status
+        top_bar_layout = QHBoxLayout()
+        top_bar_layout.addStretch(1) # Push button to the right
+        top_bar_layout.addWidget(self.global_back_home_button)
+        main_container_layout.addLayout(top_bar_layout)
+        
+        main_container_layout.addWidget(self.stacked_widget)
+        self.setCentralWidget(main_container_widget)
 
         self.create_status_bar()
 
-    def create_main_widget(self):
+    def create_home_widget(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
@@ -68,6 +91,12 @@ class ClientWindow(QMainWindow):
 
         layout.addWidget(server_list_group)
 
+        return widget
+
+    def create_receiving_widget(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
         # Receiving status
         receiving_status_group = QGroupBox("Receiving Status")
         receiving_status_layout = QVBoxLayout(receiving_status_group)
@@ -88,6 +117,12 @@ class ClientWindow(QMainWindow):
         self.statusBar = QStatusBar()
         self.setStatusBar(self.statusBar)
         self.statusBar.showMessage("Ready")
+
+    def show_home(self):
+        self.stacked_widget.setCurrentWidget(self.home_widget)
+
+    def show_receiving(self):
+        self.stacked_widget.setCurrentWidget(self.receiving_widget)
 
 # This is a placeholder for testing purposes
 if __name__ == '__main__':

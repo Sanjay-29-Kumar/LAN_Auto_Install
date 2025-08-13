@@ -1,337 +1,21 @@
-"""
-Working LAN Auto Install Server v2.0
-Real bidirectional client-server connections with working file distribution
-"""
-
-import sys
-import os
-import socket
-import threading
-import time
-import json
-import hashlib
-from pathlib import Path
-from network.transfer import FileSender
-from network import protocol
-from PyQt5.QtWidgets import *
-from PyQt5.QtCore import *
-from PyQt5.QtGui import *
-from ui.custom_widgets import FileTransferWidget
-
-
-class WorkingNetworkServer(QObject):
-    """Working network server with real client connections"""
-    client_connected = pyqtSignal(dict)
-    client_disconnected = pyqtSignal(str)
-    file_sent = pyqtSignal(dict)
-    distribution_complete = pyqtSignal(str, int)
-    file_progress = pyqtSignal(str, str, float) # file_name, client_ip, percentage
-    status_update_received = pyqtSignal(str, str, str) # file_name, client_ip, status
-    
-    def __init__(self):
-        super().__init__()
-        self.running = False
-        self.clients = {}
-        self.client_sockets = {}
-        self.server_socket = None
-        self.udp_socket = None
-        self.local_ip = self._get_local_ip()
-        self.files_to_distribute = []
-        
-    def start_server(self):
-        """Start server with all services"""
-        self.running = True
-        
-        # Start TCP server for client connections
-        threading.Thread(target=self._start_tcp_server, daemon=True).start()
-        
-        # Start UDP broadcast responder
-        threading.Thread(target=self._start_udp_responder, daemon=True).start()
-        
-        print(f"Server started on {self.local_ip}")
-    
-    def _start_tcp_server(self):
-        """Start TCP server for client connections"""
-        try:
-            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.server_socket.bind(('0.0.0.0', protocol.COMMAND_PORT))
-            self.server_socket.listen(10)
-            
-            print(f"TCP server listening on port {protocol.COMMAND_PORT}")
-            
-            while self.running:
-                try:
-                    self.server_socket.settimeout(1.0)
-                    client_sock, addr = self.server_socket.accept()
-                    threading.Thread(target=self._handle_client_connection, 
-                                   args=(client_sock, addr), daemon=True).start()
-                except socket.timeout:
-                    continue
-                except:
-                    break
-                    
-        except Exception as e:
-            print(f"TCP server error: {e}")
-    
-    def _start_udp_responder(self):
-        """Start UDP broadcast responder"""
-        try:
-            self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.udp_socket.bind(('0.0.0.0', protocol.DISCOVERY_PORT))
-            
-            print(f"UDP responder listening on port {protocol.DISCOVERY_PORT}")
-            
-            while self.running:
-                try:
-                    self.udp_socket.settimeout(1.0)
-                    data, addr = self.udp_socket.recvfrom(1024)
-                    request = json.loads(data.decode('utf-8'))
-                    
-                    if request.get('type') == 'client_discovery':
-                        # Respond to client discovery
-                        response = {
-                            'type': 'server_response',
-                            'hostname': socket.gethostname(),
-                            'port': protocol.COMMAND_PORT,
-                            'timestamp': time.time()
-                        }
-                        
-                        self.udp_socket.sendto(json.dumps(response).encode('utf-8'), addr)
-                        print(f"Responded to discovery from {addr[0]}")
-                        
-                except socket.timeout:
-                    continue
-                except Exception as e:
-                    print(f"UDP responder error: {e}")
-                    continue
-                    
-        except Exception as e:
-            print(f"UDP responder startup error: {e}")
-    
-    def _handle_client_connection(self, sock, addr):
-        """Handle client connection"""
-        client_ip = addr[0]
-        print(f" New client connection from {client_ip}")
-        
-        try:
-            while self.running:
-                try:
-                    sock.settimeout(5.0)
-                    data = sock.recv(1024)
-                    if not data:
-                        print(f"No data received from {client_ip}, closing connection")
-                        break
-                    
-                    # Parse message - handle multiple messages in one packet
-                    message_data = data.decode('utf-8').strip()
-                    if not message_data:
-                        continue
-                    
-                    # Split by newlines in case multiple messages are sent
-                    for message_line in message_data.split('\n'):
-                        if not message_line.strip():
-                            continue
-                            
-                        try:
-                            message = json.loads(message_line.strip())
-                            print(f"Received message from {client_ip}: {message.get('type', 'unknown')}")
-                            
-                            if message.get('type') == 'client_register':
-                                # Register new client
-                                client_info = {
-                                    'ip': client_ip,
-                                    'hostname': message.get('hostname', f'Client-{client_ip.split(".")[-1]}'),
-                                    'port': message.get('client_port', protocol.FILE_TRANSFER_PORT),
-                                    'connected': True,
-                                    'last_seen': time.time(),
-                                    'files_sent': 0
-                                }
-                                
-                                self.clients[client_ip] = client_info
-                                self.client_sockets[client_ip] = sock
-                                print(f"Client registered successfully: {client_info['hostname']} ({client_ip})")
-                                self.client_connected.emit(client_info)
-                                
-                                # Send acknowledgment back to client
-                                ack = json.dumps({
-                                    'type': 'registration_ack',
-                                    'status': 'success',
-                                    'server_hostname': socket.gethostname()
-                                }).encode('utf-8')
-                                sock.send(ack + b'\n')
-                                
-                            elif message.get('type') == 'heartbeat':
-                                # Update last seen
-                                if client_ip in self.clients:
-                                    self.clients[client_ip]['last_seen'] = time.time()
-                                    print(f"💓 Heartbeat from {client_ip}")
-                                else:
-                                    print(f"⚠️ Heartbeat from unregistered client {client_ip}")
-                            elif message.get('type') == protocol.MSG_TYPE_STATUS_UPDATE:
-                                file_name = message.get('file_name')
-                                status = message.get('status')
-                                self.status_update_received.emit(file_name, client_ip, status)
-                                
-                        except json.JSONDecodeError as e:
-                            print(f"⚠️ JSON decode error from {client_ip}: {e}")
-                            continue
-                    
-                except socket.timeout:
-                    # Timeout is normal, continue listening
-                    continue
-                except json.JSONDecodeError as e:
-                    print(f"JSON decode error from {client_ip}: {e}")
-                    continue # Continue listening for more data
-                except ConnectionResetError:
-                    print(f"Connection reset by {client_ip}.")
-                    break
-                except Exception as e:
-                    print(f"Unhandled error in client handler for {client_ip}: {e}")
-                    break
-                    
-        except Exception as e:
-            print(f"Critical error in client connection handler: {e}")
-        finally:
-            # Clean up disconnected client
-            if client_ip in self.clients:
-                self.clients[client_ip]['connected'] = False
-                self.client_disconnected.emit(client_ip)
-                
-            if client_ip in self.client_sockets:
-                del self.client_sockets[client_ip]
-                
-            try:
-                sock.close()
-            except:
-                pass
-                
-            print(f"Client disconnected: {client_ip}")
-    
-    def add_files_for_distribution(self, file_paths):
-        """Add files for distribution"""
-        for file_path in file_paths:
-            if os.path.exists(file_path):
-                file_info = {
-                    'path': file_path,
-                    'name': os.path.basename(file_path),
-                    'size': os.path.getsize(file_path),
-                    'category': self._get_file_category(file_path),
-                    'added_time': time.time()
-                }
-                self.files_to_distribute.append(file_info)
-                print(f"Added file for distribution: {file_info['name']}")
-    
-    def distribute_files_to_clients(self, client_ips=None):
-        """Distribute files to specified clients or all clients"""
-        if not self.files_to_distribute:
-            print("No files to distribute")
-            return
-
-        if client_ips is None:
-            client_ips = [ip for ip, client in self.clients.items() if client['connected']]
-
-        if not client_ips:
-            print("No connected clients")
-            return
-
-        print(f"Distributing {len(self.files_to_distribute)} files to {len(client_ips)} clients")
-
-        for file_info in self.files_to_distribute:
-            for client_ip in client_ips:
-                if client_ip in self.clients and self.clients[client_ip]['connected']:
-                    client_port = self.clients[client_ip].get('port', protocol.FILE_TRANSFER_PORT)
-                    
-                    # Define callbacks for progress and completion
-                    def progress_update(file_name, percentage):
-                        self.file_progress.emit(file_name, client_ip, percentage)
-
-                    def completion_update(file_name, status):
-                        print(f"Completion status for {file_name} to {client_ip}: {status}")
-                        if status == 'completed':
-                            self.clients[client_ip]['files_sent'] += 1
-                            send_info = {
-                                'file_name': file_info['name'],
-                                'client_ip': client_ip,
-                                'client_hostname': self.clients[client_ip]['hostname'],
-                                'file_size': file_info['size'],
-                                'sent_time': time.time()
-                            }
-                            self.file_sent.emit(send_info)
-                        # self.transfer_completed.emit(file_name, client_ip, status)
-
-                    # Create and start the FileSender thread
-                    sender_thread = FileSender(
-                        client_ip=client_ip,
-                        client_port=client_port,
-                        file_path=file_info['path'],
-                        file_info=file_info,
-                        progress_callback=progress_update,
-                        completion_callback=completion_update
-                    )
-                    sender_thread.start()
-    
-    def _get_file_category(self, file_path):
-        """Get file category"""
-        ext = Path(file_path).suffix.lower()
-        
-        if ext in ['.exe', '.msi', '.deb', '.rpm']:
-            return 'installer'
-        elif ext in ['.pdf', '.doc', '.docx', '.txt']:
-            return 'document'
-        elif ext in ['.jpg', '.png', '.mp4', '.mp3', '.avi']:
-            return 'media'
-        elif ext in ['.zip', '.rar', '.7z', '.tar']:
-            return 'archive'
-        else:
-            return 'other'
-    
-    def _get_local_ip(self):
-        """Get local IP address"""
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-            s.close()
-            return ip
-        except:
-            return "127.0.0.1"
-    
-    def get_connected_clients(self):
-        """Get list of connected clients"""
-        return [client for client in self.clients.values() if client['connected']]
-    
-    def stop_server(self):
-        """Stop server"""
-        self.running = False
-        
-        # Close all client connections
-        for sock in self.client_sockets.values():
-            try:
-                sock.close()
-            except:
-                pass
-        
-        if self.server_socket:
-            try:
-                self.server_socket.close()
-            except:
-                pass
-        
-        if self.udp_socket:
-            try:
-                self.udp_socket.close()
-            except:
-                pass
-
-
 from ui.server_ui import ServerWindow
+from PyQt5.QtWidgets import QApplication, QMainWindow, QMessageBox, QFileDialog, QListWidgetItem
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QColor
+from network.server import NetworkServer
+from ui.custom_widgets import FileTransferWidget
+import os
+import time
+from network import protocol
+from utils.file_manager import FileManager
 
 class ServerController:
     def __init__(self, network_server, ui):
         self.network_server = network_server
         self.ui = ui
+        self.transfer_widgets = {}
         self.connect_signals()
+        self.network_server.start_server() # Start the server network operations
 
     def connect_signals(self):
         # Connect network signals to UI slots
@@ -350,6 +34,39 @@ class ServerController:
         self.network_server.file_progress.connect(self.update_transfer_progress)
         self.network_server.status_update_received.connect(self.update_transfer_status)
         self.ui.client_list_widget.itemClicked.connect(self.show_client_profile)
+        self.ui.manual_ip_connect_button.clicked.connect(self.connect_to_manual_ip)
+        self.ui.show_server_details_button.clicked.connect(self.show_server_details)
+        self.network_server.server_ip_updated.connect(self.update_server_ip_display)
+        self.ui.cancel_all_button.clicked.connect(self.cancel_all_transfers)
+        self.ui.cancel_selected_button.clicked.connect(self.cancel_selected_transfers)
+        self.ui.global_back_home_button.clicked.connect(self.ui.show_home) # Connect global back/home button
+        self.network_server.status_update.connect(self.update_status_bar) # Connect status update signal
+        self.ui.global_back_home_button.clicked.connect(self.ui.show_home) # Connect global back/home button
+        self.network_server.status_update.connect(self.update_status_bar) # Connect status update signal
+
+    def update_server_ip_display(self, ip_address):
+        self.ui.server_ip_label.setText(f"Server IP: {ip_address}")
+
+    def connect_to_manual_ip(self):
+        ip_address = self.ui.manual_ip_input.text()
+        if ip_address:
+            self.network_server.connect_to_client_manual(ip_address)
+            self.ui.manual_ip_input.clear()
+            self.ui.status_bar.setText(f"Attempting to connect to {ip_address}...")
+        else:
+            QMessageBox.warning(self.ui, "Invalid IP", "Please enter a valid IP address.")
+
+    def show_server_details(self):
+        server_ip = self.network_server.get_server_ip()
+        hostname = os.uname().nodename if hasattr(os, 'uname') else 'N/A'
+        system_info = f"""
+        <b>Server Details</b><br>
+        --------------------<br>
+        <b>Hostname:</b> {hostname}<br>
+        <b>IP Address:</b> {server_ip}<br>
+        <b>Operating System:</b> {os.sys.platform}<br>
+        """
+        QMessageBox.information(self.ui, "Server Details", system_info)
 
     def show_client_profile(self, item):
         ip = item.text().split('(')[1].replace(')', '')
@@ -428,14 +145,19 @@ class ServerController:
         self.ui.transfer_list_widget.clear()
         self.transfer_widgets = {}
 
+        # Populate transfer list with all selected files for all selected clients
         for file_info in self.network_server.files_to_distribute:
             for client_ip in selected_clients:
-                widget = FileTransferWidget(file_info['name'], file_info['size'])
+                widget = FileTransferWidget(file_info['name'], file_info['size'], client_ip) # Pass client_ip to widget
                 item = QListWidgetItem(self.ui.transfer_list_widget)
                 item.setSizeHint(widget.sizeHint())
                 self.ui.transfer_list_widget.addItem(item)
                 self.ui.transfer_list_widget.setItemWidget(item, widget)
                 self.transfer_widgets[(file_info['name'], client_ip)] = widget
+                # Connect cancel button for each transfer widget
+                widget.cancel_button.clicked.connect(lambda checked, fn=file_info['name'], cip=client_ip: self.cancel_single_transfer(fn, cip))
+                # Add a checkbox to the widget for selection
+                widget.add_checkbox()
 
         self.network_server.distribute_files_to_clients(selected_clients)
         self.ui.show_while_sharing()
@@ -454,23 +176,88 @@ class ServerController:
             widget.set_status(status, "lightblue")
 
     def send_to_all_clients(self):
-        self.network_server.distribute_files_to_clients()
+        connected_clients = self.network_server.get_connected_clients()
+        selected_clients_ips = [client['ip'] for client in connected_clients]
+        
+        if not selected_clients_ips:
+            QMessageBox.warning(self.ui, "No Clients Connected", "No clients are connected to send files to.")
+            return
+
+        if not self.network_server.files_to_distribute:
+            QMessageBox.warning(self.ui, "No Files Selected", "Please select files to distribute.")
+            return
+
+        self.ui.transfer_list_widget.clear()
+        self.transfer_widgets = {}
+
+        for file_info in self.network_server.files_to_distribute:
+            for client_ip in selected_clients_ips:
+                widget = FileTransferWidget(file_info['name'], file_info['size'], client_ip)
+                item = QListWidgetItem(self.ui.transfer_list_widget)
+                item.setSizeHint(widget.sizeHint())
+                self.ui.transfer_list_widget.addItem(item)
+                self.ui.transfer_list_widget.setItemWidget(item, widget)
+                self.transfer_widgets[(file_info['name'], client_ip)] = widget
+                widget.cancel_button.clicked.connect(lambda checked, fn=file_info['name'], cip=client_ip: self.cancel_single_transfer(fn, cip))
+                # Add a checkbox to the widget for selection
+                widget.add_checkbox()
+
+        self.network_server.distribute_files_to_clients(selected_clients_ips)
         self.ui.show_while_sharing()
 
+    def cancel_single_transfer(self, file_name, client_ip):
+        self.network_server.cancel_file_transfer(client_ip, file_name)
+        # Optionally update UI to reflect cancellation
+        if (file_name, client_ip) in self.transfer_widgets:
+            widget = self.transfer_widgets[(file_name, client_ip)]
+            widget.set_status("Cancelled by Server", "red")
+            widget.set_progress(0) # Reset progress or indicate cancellation visually
 
-def main():
-    app = QApplication(sys.argv)
-    
-    network_server = WorkingNetworkServer()
-    network_server.start_server()
-    
-    main_window = ServerWindow(network_server)
-    controller = ServerController(network_server, main_window)
-    
-    main_window.show()
-    
-    sys.exit(app.exec_())
+    def cancel_all_transfers(self):
+        self.network_server.cancel_all_transfers()
+        # Update UI for all transfers
+        for (file_name, client_ip), widget in self.transfer_widgets.items():
+            widget.set_status("Cancelled by Server", "red")
+            widget.set_progress(0)
 
+    def update_status_bar(self, message, color):
+        """Updates the status bar with a message and color."""
+        self.ui.statusBar.setStyleSheet(f"QStatusBar {{ color: {color}; }}")
+        self.ui.statusBar.showMessage(message)
 
-if __name__ == '__main__':
-    sys.exit(main())
+    def cancel_selected_transfers(self):
+        transfers_to_cancel = []
+        for i in range(self.ui.transfer_list_widget.count()):
+            item = self.ui.transfer_list_widget.item(i)
+            widget = self.ui.transfer_list_widget.itemWidget(item)
+            if widget and widget.is_checked(): # Assuming FileTransferWidget has an is_checked method
+                transfers_to_cancel.append((widget.file_name, widget.client_ip))
+        
+        if not transfers_to_cancel:
+            QMessageBox.warning(self.ui, "No Transfers Selected", "Please select transfers to cancel.")
+            return
+
+        self.network_server.cancel_selected_transfers(transfers_to_cancel)
+        for file_name, client_ip in transfers_to_cancel:
+            if (file_name, client_ip) in self.transfer_widgets:
+                widget = self.transfer_widgets[(file_name, client_ip)]
+                widget.set_status("Cancelled by Server", "red")
+                widget.set_progress(0)
+
+if __name__ == "__main__":
+    app = QApplication([])
+    
+    # Initialize UI
+    server_window = ServerWindow()
+    
+    # Initialize Network Server
+    network_server = NetworkServer()
+    
+    # Initialize Controller
+    controller = ServerController(network_server, server_window)
+    
+    server_window.show()
+    app.exec_()
+    
+    # Ensure server stops gracefully on exit
+    network_server.stop_server()

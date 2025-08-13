@@ -11,15 +11,13 @@ from PyQt5.QtGui import *
 from .custom_widgets import FileTransferWidget
 
 class ServerWindow(QMainWindow):
-    def __init__(self, network_server):
+    def __init__(self):
         super().__init__()
-        self.network_server = network_server
         self.setWindowTitle("LAN Auto Install - Server")
         self.setGeometry(100, 100, 900, 700)
 
         self.stacked_widget = QStackedWidget()
-        self.setCentralWidget(self.stacked_widget)
-
+        
         self.home_widget = self.create_home_widget()
         self.after_selection_widget = self.create_after_selection_widget()
         self.while_sharing_widget = self.create_while_sharing_widget()
@@ -27,6 +25,24 @@ class ServerWindow(QMainWindow):
         self.stacked_widget.addWidget(self.home_widget)
         self.stacked_widget.addWidget(self.after_selection_widget)
         self.stacked_widget.addWidget(self.while_sharing_widget)
+
+        # Add a global back/home button
+        self.global_back_home_button = QPushButton("Home / Back")
+        self.global_back_home_button.setFixedSize(100, 30)
+        self.global_back_home_button.clicked.connect(self.show_home)
+
+        # Main layout to hold stacked widget and global button
+        main_container_widget = QWidget()
+        main_container_layout = QVBoxLayout(main_container_widget)
+        
+        # Top bar for global buttons/status
+        top_bar_layout = QHBoxLayout()
+        top_bar_layout.addStretch(1) # Push button to the right
+        top_bar_layout.addWidget(self.global_back_home_button)
+        main_container_layout.addLayout(top_bar_layout)
+        
+        main_container_layout.addWidget(self.stacked_widget)
+        self.setCentralWidget(main_container_widget)
 
         self.create_status_bar()
 
@@ -39,9 +55,16 @@ class ServerWindow(QMainWindow):
         server_info_group = QGroupBox("Server Information")
         server_info_layout = QFormLayout(server_info_group)
         self.server_name_label = QLabel(socket.gethostname())
-        self.server_ip_label = QLabel(self.network_server.local_ip)
+        self.server_ip_label = QLabel("Fetching IP...") # Initial text
+        self.show_server_details_button = QPushButton("Details")
+        self.show_server_details_button.setFixedSize(60, 25) # Smaller button
+        
+        ip_layout = QHBoxLayout()
+        ip_layout.addWidget(self.server_ip_label)
+        ip_layout.addWidget(self.show_server_details_button)
+
         server_info_layout.addRow("Server Name:", self.server_name_label)
-        server_info_layout.addRow("Server IP:", self.server_ip_label)
+        server_info_layout.addRow("Server IP:", ip_layout)
         top_layout.addWidget(server_info_group)
 
         connection_status_group = QGroupBox("Connection Status")
@@ -63,9 +86,9 @@ class ServerWindow(QMainWindow):
         manual_ip_layout = QHBoxLayout()
         self.manual_ip_input = QLineEdit()
         self.manual_ip_input.setPlaceholderText("Enter client IP to connect manually")
-        self.connect_manual_ip_button = QPushButton("Connect")
+        self.manual_ip_connect_button = QPushButton("Connect")
         manual_ip_layout.addWidget(self.manual_ip_input)
-        manual_ip_layout.addWidget(self.connect_manual_ip_button)
+        manual_ip_layout.addWidget(self.manual_ip_connect_button)
         client_list_layout.addLayout(manual_ip_layout)
 
         self.refresh_clients_button = QPushButton("Refresh Client List")
@@ -99,14 +122,12 @@ class ServerWindow(QMainWindow):
         self.send_files_button = QPushButton("Send to Selected Clients")
         self.select_all_files_button = QPushButton("Select All")
         self.send_to_all_button = QPushButton("Send to All Clients")
-        self.back_to_home_button = QPushButton("Back to Home")
         button_layout.addWidget(self.add_more_files_button)
         button_layout.addWidget(self.remove_selected_files_button)
         button_layout.addWidget(self.select_all_files_button)
         button_layout.addWidget(self.send_files_button)
         button_layout.addWidget(self.send_to_all_button)
         layout.addLayout(button_layout)
-        layout.addWidget(self.back_to_home_button)
 
         return widget
 
@@ -122,9 +143,11 @@ class ServerWindow(QMainWindow):
         layout.addWidget(transfer_progress_group)
 
         # Action buttons
+        # Action buttons
         button_layout = QHBoxLayout()
         self.cancel_all_button = QPushButton("Cancel All Transfers")
         self.cancel_selected_button = QPushButton("Cancel Selected")
+        # The back to home button is now global, so remove this one
         button_layout.addWidget(self.cancel_all_button)
         button_layout.addWidget(self.cancel_selected_button)
         layout.addLayout(button_layout)
@@ -147,12 +170,7 @@ class ServerWindow(QMainWindow):
 
 # This is a placeholder for testing purposes
 if __name__ == '__main__':
-    import socket
-    class MockNetworkServer:
-        def __init__(self):
-            self.local_ip = "127.0.0.1"
     app = QApplication(sys.argv)
-    server = MockNetworkServer()
-    window = ServerWindow(server)
+    window = ServerWindow()
     window.show()
     sys.exit(app.exec_())

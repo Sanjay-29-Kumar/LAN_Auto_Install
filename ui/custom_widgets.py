@@ -35,6 +35,15 @@ class FileTransferWidget(QWidget):
         self.progress_bar.setValue(0)
         layout.addWidget(self.progress_bar)
 
+        # Add a cancel button for individual transfers
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.setFixedSize(60, 25)
+        info_layout.addWidget(self.cancel_button) # Add to info_layout for right alignment
+
+        self.checkbox = QCheckBox()
+        self.checkbox.setVisible(False) # Hidden by default
+        info_layout.addWidget(self.checkbox)
+
     def set_progress(self, percentage):
         self.progress_bar.setValue(int(percentage))
 
@@ -42,3 +51,9 @@ class FileTransferWidget(QWidget):
         self.status_label.setText(status)
         if color:
             self.status_label.setStyleSheet(f"color: {color};")
+
+    def add_checkbox(self):
+        self.checkbox.setVisible(True)
+
+    def is_checked(self):
+        return self.checkbox.isChecked()
