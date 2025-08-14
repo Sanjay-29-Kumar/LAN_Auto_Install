@@ -1,0 +1,14 @@
+Its working properly
+-->Finding Server or Client is faster 
+-->Connection is faster
+-->Installer Soon
+
+But there are some limitations
+-->When installer files sent it has to be set up automatically 
+-->Need acknowledgement if sent,needed manual set up,installed and set up successfully
+-->UI updation is needed 
+
+FUTURE UPDATES:
+-->...
+
+
