@@ -23,7 +23,7 @@ class ClientController:
         self.network_client.connection_status.connect(self.update_connection_status)
         self.network_client.file_received.connect(self.add_received_file)
         self.network_client.file_progress.connect(self.update_transfer_progress)
-        self.network_client.file_status_update.connect(self.update_transfer_status)
+        self.network_client.status_update.connect(self.update_transfer_status)
 
         # Connect UI signals to controller slots
         self.ui.refresh_servers_button.clicked.connect(self.refresh_servers)
@@ -57,7 +57,10 @@ class ClientController:
         
         item = QListWidgetItem(f"{server_info['hostname']} ({server_info['ip']})")
         item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-        item.setCheckState(Qt.Unchecked)
+        if server_info['ip'] == self.network_client.local_ip:
+            item.setCheckState(Qt.Checked)
+        else:
+            item.setCheckState(Qt.Unchecked)
         self.ui.server_list_widget.addItem(item)
 
     def update_connection_status(self, server_ip, connected):

@@ -23,6 +23,7 @@ class NetworkClient(QObject):
         self.host = host
         self.port = port
         self.client_socket = None
+        self.local_ip = '0.0.0.0' # Initialize local_ip
         self.connected_servers = {} # {ip: {socket: ..., thread: ..., info: ...}}
         self.servers = {} # Discovered servers {ip: info}
         self.running = False

@@ -25,7 +25,7 @@ class ServerController:
         # Connect UI signals to controller slots
         self.ui.select_files_button.clicked.connect(self.select_files)
         self.ui.send_files_button.clicked.connect(self.send_files)
-        self.ui.back_to_home_button.clicked.connect(self.ui.show_home)
+        self.ui.global_back_home_button.clicked.connect(self.ui.show_home)
         self.ui.refresh_clients_button.clicked.connect(self.update_client_list)
         self.ui.add_more_files_button.clicked.connect(self.select_files)
         self.ui.remove_selected_files_button.clicked.connect(self.remove_selected_files)

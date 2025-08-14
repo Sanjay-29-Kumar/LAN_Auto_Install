@@ -118,6 +118,10 @@ class ClientWindow(QMainWindow):
         self.setStatusBar(self.statusBar)
         self.statusBar.showMessage("Ready")
 
+    def update_status_bar(self, message, color):
+        self.statusBar.setStyleSheet(f"QStatusBar {{ color: {color}; }}")
+        self.statusBar.showMessage(message)
+
     def show_home(self):
         self.stacked_widget.setCurrentWidget(self.home_widget)
 
