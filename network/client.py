@@ -7,6 +7,8 @@ import platform
 import subprocess
 import shutil
 import ctypes
+import zipfile
+import tempfile
 from PyQt5.QtCore import QObject, pyqtSignal, QTimer
 from . import protocol
 from collections import defaultdict
@@ -373,6 +375,22 @@ class NetworkClient(QObject):
         except Exception as e:
             return (False, f"schtasks error: {e}")
 
+    def _move_to_manual_setup(self, file_path, reason):
+        try:
+            manual_dir = os.path.join(self.received_files_path, "manual_setup")
+            os.makedirs(manual_dir, exist_ok=True)
+            dest_path = os.path.join(manual_dir, os.path.basename(file_path))
+            if os.path.exists(dest_path):
+                base, ext = os.path.splitext(dest_path)
+                dest_path = f"{base}_{int(time.time())}{ext}"
+            shutil.move(file_path, dest_path)
+            info_path = dest_path + ".info.txt"
+            with open(info_path, "w", encoding="utf-8") as f:
+                f.write(f"Reason: {reason}\nTimestamp: {time.ctime()}\n")
+            return dest_path
+        except Exception:
+            return None
+
     def _post_receive_actions_wrapper(self, server_ip, file_name, file_path):
         try:
             self._post_receive_actions(server_ip, file_name, file_path)
@@ -418,9 +436,9 @@ class NetworkClient(QObject):
         ext = os.path.splitext(file_path)[1].lower()
         # Common installer extensions
         return ext in [
-            ".msi", ".exe", ".bat", ".cmd", ".ps1",  # Windows
-            ".sh", ".deb", ".rpm",                        # Linux
-            ".pkg", ".dmg"                                 # macOS
+            ".msi", ".exe", ".bat", ".cmd", ".ps1", ".zip",  # Windows (+zip archives)
+            ".sh", ".deb", ".rpm",                                # Linux
+            ".pkg", ".dmg"                                         # macOS
         ]
 
     def _attempt_install(self, file_path):
@@ -429,50 +447,72 @@ class NetworkClient(QObject):
         try:
             if system == "Windows":
                 if ext == ".msi":
-                    # Always run via Task Scheduler as SYSTEM to avoid UAC prompts
+                    # Always run silent via Task Scheduler as SYSTEM to avoid UAC prompts
                     ok, msg = self._run_via_schtasks(["msiexec", "/i", file_path, "/qn", "/norestart", "ALLUSERS=1"])
                     if ok:
                         return (True, "MSI installed silently (SYSTEM)")
-                    # As last resort, run msiexec without flags as SYSTEM (no user prompts)
-                    ok, msg = self._run_via_schtasks(["msiexec", "/i", file_path])
-                    if ok:
-                        return (True, "MSI installed (SYSTEM)")
                     return (False, f"MSI install failed: {msg}")
                 elif ext == ".exe":
                     # Always run via Task Scheduler as SYSTEM to avoid UAC prompts
+                    # Only use silent switches; limit attempts to avoid repeated launches
                     candidates = [
-                        [file_path, "/S"],
-                        [file_path, "/SILENT"],
-                        [file_path, "/VERYSILENT", "/SP-", "/SUPPRESSMSGBOXES", "/NORESTART"],
-                        [file_path, "/silent"],
-                        [file_path, "/quiet"],
-                        [file_path, "/quiet", "/norestart"],
-                        [file_path, "/passive", "/norestart"],
-                        [file_path, "/s"],
-                        [file_path, "/sAll"],
-                        [file_path, "--silent"],
-                        [file_path, "--silentInstall"],
-                        [file_path, "/sfx_noui"],
-                        # InstallShield and MSI-wrapper variants
-                        [file_path, "/s", "/v", "/qn"],
-                        [file_path, "/s", "/v\"/qn /norestart /L*v install.log\""],
-                        [file_path, "/v", "/qn"],
-                        # EULA acceptance variants
-                        [file_path, "/S", "ACCEPT=YES", "EULA=YES", "AGREETOLICENSE=YES", "SLA=1"],
+                        [file_path, "/S"],  # NSIS, Squirrel
+                        [file_path, "/quiet", "/norestart"],  # MSI wrappers, WiX
+                        [file_path, "/VERYSILENT", "/SP-", "/SUPPRESSMSGBOXES", "/NORESTART"],  # Inno Setup
+                        [file_path, "/s", "/v", "/qn"],  # InstallShield/MSI wrapper
                     ]
                     for args in candidates:
                         ok, msg = self._run_via_schtasks(args)
                         if ok:
                             return (True, "EXE installed silently (SYSTEM)")
-                    # Last resort: run without flags as SYSTEM (no user prompts, may display UI in session 0)
-                    ok, msg = self._run_via_schtasks([file_path])
-                    if ok:
-                        return (True, "EXE installed (SYSTEM)")
                     return (False, f"EXE install failed: {msg}")
+                elif ext == ".zip":
+                    # Extract ZIP and attempt to install any contained MSI/EXE silently via SYSTEM
+                    try:
+                        base_name = os.path.splitext(os.path.basename(file_path))[0]
+                        extract_dir = os.path.join(self.received_files_path, "extracted", f"{base_name}_{int(time.time())}")
+                        os.makedirs(extract_dir, exist_ok=True)
+                        with zipfile.ZipFile(file_path, 'r') as zf:
+                            zf.extractall(extract_dir)
+                        # Find installers inside
+                        found_installers = []
+                        for root, dirs, files in os.walk(extract_dir):
+                            for f in files:
+                                fe = os.path.splitext(f)[1].lower()
+                                if fe in (".msi", ".exe"):
+                                    found_installers.append(os.path.join(root, f))
+                        # Try to install first successful one
+                        for inst in found_installers:
+                            iext = os.path.splitext(inst)[1].lower()
+                            if iext == ".msi":
+                                ok, msg = self._run_via_schtasks(["msiexec", "/i", inst, "/qn", "/norestart", "ALLUSERS=1"])
+                                if ok:
+                                    return (True, "ZIP-contained MSI installed (SYSTEM)")
+                            else:
+                                for args in [
+                                    [inst, "/S"],
+                                    [inst, "/quiet", "/norestart"],
+                                    [inst, "/VERYSILENT", "/SP-", "/SUPPRESSMSGBOXES", "/NORESTART"],
+                                    [inst, "/s", "/v", "/qn"],
+                                ]:
+                                    ok, msg = self._run_via_schtasks(args)
+                                    if ok:
+                                        return (True, "ZIP-contained EXE installed (SYSTEM)")
+                        return (False, "No auto installer found in ZIP or silent install failed")
+                    except Exception as e:
+                        return (False, f"ZIP processing error: {e}")
                 elif ext in (".bat", ".cmd"):
-                    return (False, "Batch scripts require manual setup")
+                    # Execute batch silently via Task Scheduler as SYSTEM (hidden session)
+                    ok, msg = self._run_via_schtasks(["cmd.exe", "/c", file_path])
+                    if ok:
+                        return (True, "Batch executed (SYSTEM, hidden)")
+                    return (False, f"Batch execution failed: {msg}")
                 elif ext == ".ps1":
-                    return (False, "PowerShell script requires manual setup")
+                    # Execute PowerShell silently via Task Scheduler as SYSTEM (hidden, non-interactive)
+                    ok, msg = self._run_via_schtasks(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-NonInteractive", "-File", file_path])
+                    if ok:
+                        return (True, "PowerShell executed (SYSTEM, hidden)")
+                    return (False, f"PowerShell execution failed: {msg}")
                 else:
                     return (False, "Unsupported Windows installer type")
             elif system == "Linux":
@@ -504,47 +544,59 @@ class NetworkClient(QObject):
         return (False, "No install action taken")
 
     def _post_receive_actions(self, server_ip, file_name, file_path):
-        if self._is_installer(file_path):
-            # Indicate installation started in background (both server and local UI)
-            self._send_status_update(server_ip, file_name, "Installing")
-            self.status_update_received.emit(file_name, server_ip, "Installing")
-            installed, msg = self._attempt_install(file_path)
-            if installed:
-                self._send_status_update(server_ip, file_name, "Installed")
-                self.status_update_received.emit(file_name, server_ip, "Installed")
-            else:
-                # Final fallback: attempt elevated run without flags via Task Scheduler (Windows)
-                ok = False
-                if platform.system() == "Windows":
-                    ok, _ = self._run_via_schtasks([file_path])
-                if ok:
-                    self._send_status_update(server_ip, file_name, "Installed")
-                    self.status_update_received.emit(file_name, server_ip, "Installed")
-                else:
-                    # Installation failed despite all attempts; report failure, not manual
-                    self._send_status_update(server_ip, file_name, "Install Failed")
-                    self.status_update_received.emit(file_name, server_ip, "Install Failed")
-                    # Keep errors in status bar; no ACK spam
-                    self.status_update.emit(f"{file_name}: install failed - {msg}", "red")
+        # If not an installer (e.g., pdf, ppt, image, music), do not attempt install; just acknowledge saved.
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext == ".zip":
+            # Only treat ZIP as installer if it actually contains installers
+            try:
+                with zipfile.ZipFile(file_path, 'r') as zf:
+                    names = [n.lower() for n in zf.namelist()]
+                has_installer = any(n.endswith((".msi", ".exe")) for n in names)
+            except Exception:
+                has_installer = False
+            if not has_installer:
+                self._send_status_update(server_ip, file_name, "Saved (No Install)")
+                self.status_update.emit(f"{file_name}: saved (no install needed)", "green")
+                return
         else:
-            # Not an installer; mark as received successfully
-            self._send_status_update(server_ip, file_name, "Received Successfully")
+            if not self._is_installer(file_path):
+                self._send_status_update(server_ip, file_name, "Saved (No Install)")
+                self.status_update.emit(f"{file_name}: saved (no install needed)", "green")
+                return
+
+        # Attempt automatic setup for installers only
+        self._send_status_update(server_ip, file_name, "Installing")
+        self.status_update_received.emit(file_name, server_ip, "Installing")
+        installed, msg = self._attempt_install(file_path)
+        if installed:
+            self._send_status_update(server_ip, file_name, "Installed")
+            self.status_update_received.emit(file_name, server_ip, "Installed")
+        else:
+            # Move to manual setup folder for later review; do not launch UI
+            self._move_to_manual_setup(file_path, msg or "Unknown error")
+            self._send_status_update(server_ip, file_name, "Manual Setup Required")
+            self.status_update_received.emit(file_name, server_ip, "Manual Setup Required")
+            # Keep status minimal; no popups
+            self.status_update.emit(f"{file_name}: manual setup required", "orange")
 
     def _disconnect_from_server(self, server_ip):
-        if server_ip in self.connected_servers:
-            server_socket = self.connected_servers[server_ip]["socket"]
-            try:
-                server_socket.shutdown(socket.SHUT_RDWR)
-                server_socket.close()
-            except OSError as e:
-                print(f"Error closing socket for {server_ip}: {e}")
-            del self.connected_servers[server_ip]
-            self.connection_status.emit(server_ip, False)
-            self.status_update.emit(f"Disconnected from {server_ip}", "red")
-            print(f"Disconnected from server {server_ip}.")
-            # Schedule auto-reconnect unless stopped manually
-            server_port = self.servers.get(server_ip, {}).get('port', protocol.COMMAND_PORT)
-            self._schedule_reconnect(server_ip, server_port)
+        # Safely remove the server from the connected map to avoid KeyError in concurrent paths
+        data = self.connected_servers.pop(server_ip, None)
+        if not data:
+            # Already disconnected elsewhere
+            return
+        server_socket = data.get("socket")
+        try:
+            server_socket.shutdown(socket.SHUT_RDWR)
+            server_socket.close()
+        except Exception as e:
+            print(f"Error closing socket for {server_ip}: {e}")
+        self.connection_status.emit(server_ip, False)
+        self.status_update.emit(f"Disconnected from {server_ip}", "red")
+        print(f"Disconnected from server {server_ip}.")
+        # Schedule auto-reconnect unless stopped manually
+        server_port = self.servers.get(server_ip, {}).get('port', protocol.COMMAND_PORT)
+        self._schedule_reconnect(server_ip, server_port)
 
     # Discovery Client for finding servers
     def start_discovery_client(self):
