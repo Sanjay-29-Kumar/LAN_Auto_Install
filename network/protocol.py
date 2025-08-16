@@ -3,10 +3,10 @@ Defines the TCP communication protocol for reliable file transfer.
 """
 
 # Port for the main TCP command channel
-COMMAND_PORT = 5000
+COMMAND_PORT = 5001
 
 # Port for the UDP discovery broadcast
-DISCOVERY_PORT = 5001
+DISCOVERY_PORT = 5000
 
 # Port for the client's file transfer listener
 FILE_TRANSFER_PORT = 5002

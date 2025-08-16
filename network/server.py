@@ -11,6 +11,8 @@ from collections import defaultdict
 CHUNK_SIZE = 4096
 RECEIVED_FILES_DIR = "received_files" # For client, not server
 
+from . import protocol
+
 class NetworkServer(QObject):
     client_connected = pyqtSignal(dict) # Emits client info {ip, hostname, os_type, is_windows}
     client_disconnected = pyqtSignal(str) # Emits client IP
@@ -19,7 +21,7 @@ class NetworkServer(QObject):
     status_update = pyqtSignal(str, str) # Emits (message, color)
     server_ip_updated = pyqtSignal(str) # Emits the server's IP address
 
-    def __init__(self, host='0.0.0.0', port=5001, discovery_port=5000):
+    def __init__(self, host='0.0.0.0', port=protocol.COMMAND_PORT, discovery_port=protocol.DISCOVERY_PORT):
         super().__init__()
         self.host = host
         self.port = port
@@ -49,6 +51,7 @@ class NetworkServer(QObject):
             self.server_ip = socket.gethostbyname(socket.gethostname())
             self.server_ip_updated.emit(self.server_ip)
             print(f"Server listening on {self.host}:{self.port}")
+            print(f"Discovery advertising on UDP {self.discovery_port}")
             self.status_update.emit(f"Server started on {self.host}:{self.port}", "green")
         except Exception as e:
             print(f"Error starting server: {e}")

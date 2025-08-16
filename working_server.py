@@ -7,7 +7,6 @@ from ui.custom_widgets import FileTransferWidget
 import os
 import time
 from network import protocol
-from utils.file_manager import FileManager
 
 class ServerController:
     def __init__(self, network_server, ui):

@@ -5,6 +5,7 @@ import os
 import time
 import platform
 from PyQt5.QtCore import QObject, pyqtSignal, QTimer
+from . import protocol
 from collections import defaultdict
 
 # Define chunk size for file transfers
@@ -229,7 +230,7 @@ class NetworkClient(QObject):
         self.discovery_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.discovery_socket.settimeout(1) # Timeout for recvfrom
 
-        discovery_port = 5000 # Must match server's discovery port
+        discovery_port = protocol.DISCOVERY_PORT # Must match server's discovery port
         try:
             self.discovery_socket.bind(('', self.port)) # Bind to ephemeral port for sending
             self.discovery_client_running = True
