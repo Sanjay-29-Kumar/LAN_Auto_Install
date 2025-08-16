@@ -59,7 +59,13 @@ class ClientController:
             if server_info['ip'] in item.text():
                 return
         
-        item = QListWidgetItem(f"{server_info['hostname']} ({server_info['ip']})")
+        hostname = server_info.get('hostname', '') or 'Unknown'
+        # Truncate long hostnames for single-line fit
+        if len(hostname) > 26:
+            hostname = hostname[:26] + '…'
+        label = f"{hostname} ({server_info['ip']})"
+        item = QListWidgetItem(label)
+        item.setTextAlignment(Qt.AlignHCenter)
         item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
         if server_info['ip'] == self.network_client.local_ip:
             item.setCheckState(Qt.Checked)
@@ -74,16 +80,11 @@ class ClientController:
 
     def update_connection_status(self, server_ip, connected):
         self.ui.connection_status_label.setText(f"Connected to {server_ip}" if connected else f"Disconnected from {server_ip}")
-        # You can also update the server list item to show connection status
+        # Update color only; avoid appending long status text which causes wrapping
         for i in range(self.ui.server_list_widget.count()):
             item = self.ui.server_list_widget.item(i)
             if server_ip in item.text():
-                if connected:
-                    item.setText(f"{item.text().split(' ')[0]} ({server_ip}) [Connected]")
-                    item.setForeground(QColor("lightgreen"))
-                else:
-                    item.setText(f"{item.text().split(' ')[0]} ({server_ip}) [Disconnected]")
-                    item.setForeground(QColor("lightcoral"))
+                item.setForeground(QColor("lightgreen" if connected else "lightcoral"))
                 break
 
     def add_received_file(self, file_info):

@@ -1,5 +1,8 @@
 """
-Main server window for the LAN Auto Install application.
+LocalSend-inspired server UI for the LAN Auto Install application.
+- Modern dark theme with rounded cards and accent colors
+- Connected client list in a grid/card-like presentation similar to LocalSend
+- Preserves existing widget names used by the server controller
 """
 
 import sys
@@ -9,156 +12,257 @@ from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5.QtGui import *
 from .custom_widgets import FileTransferWidget
+from string import Template
+
+PRIMARY = "#3b82f6"   # blue-500
+ACCENT = "#22c55e"    # green-500
+BG0 = "#0b1220"       # near-slate-900
+BG1 = "#0f172a"       # slate-900
+BG2 = "#111827"       # gray-900
+BORDER = "#374151"    # gray-700
+FG = "#e5e7eb"        # gray-200
+FG_MUTED = "#9ca3af"  # gray-400
+
+
+class PillLabel(QLabel):
+    def __init__(self, text="", color=ACCENT, parent=None):
+        super().__init__(text, parent)
+        self.setStyleSheet(
+            f"QLabel {{ background-color: {color}; color: #0b1220; border-radius: 10px; padding: 3px 8px; font-weight: 600; }}"
+        )
+
 
 class ServerWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("LAN Auto Install - Server")
-        self.setGeometry(100, 100, 900, 700)
+        self.setGeometry(100, 100, 1000, 720)
 
+        # App/window icon
+        try:
+            base = getattr(sys, '_MEIPASS', os.path.abspath('.'))
+            self.setWindowIcon(QIcon(os.path.join(base, 'server.png')))
+        except Exception:
+            pass
+
+        # Core stacked pages
         self.stacked_widget = QStackedWidget()
-        
         self.home_widget = self.create_home_widget()
         self.after_selection_widget = self.create_after_selection_widget()
         self.while_sharing_widget = self.create_while_sharing_widget()
-
         self.stacked_widget.addWidget(self.home_widget)
         self.stacked_widget.addWidget(self.after_selection_widget)
         self.stacked_widget.addWidget(self.while_sharing_widget)
 
-        # Add a global back/home button
-        self.global_back_home_button = QPushButton("Home / Back")
-        self.global_back_home_button.setFixedSize(100, 30)
-        self.global_back_home_button.clicked.connect(self.show_home)
+        # Global top app bar
+        appbar = QWidget()
+        appbar_layout = QHBoxLayout(appbar)
+        appbar_layout.setContentsMargins(16, 12, 16, 12)
+        appbar_layout.setSpacing(12)
 
-        # Main layout to hold stacked widget and global button
+        title_box = QHBoxLayout()
+        title_icon = QLabel()
+        title_icon.setFixedSize(26, 26)
+        title_icon.setStyleSheet(f"background-color: {PRIMARY}; border-radius: 13px;")
+        title_label = QLabel("Server")
+        title_label.setStyleSheet("font-size: 18px; font-weight: 700;")
+        title_box.addWidget(title_icon)
+        title_box.addSpacing(8)
+        title_box.addWidget(title_label)
+
+        appbar_layout.addLayout(title_box)
+        appbar_layout.addStretch(1)
+
+        # Device pill shows hostname
+        self.device_pill = PillLabel(socket.gethostname())
+        appbar_layout.addWidget(self.device_pill)
+
+        # Global Home/Back button preserved
+        self.global_back_home_button = QPushButton("Home / Back")
+        self.global_back_home_button.setObjectName("secondaryButton")
+        self.global_back_home_button.setFixedHeight(34)
+        self.global_back_home_button.clicked.connect(self.show_home)
+        appbar_layout.addWidget(self.global_back_home_button)
+
+        # Main container: app bar + pages
         main_container_widget = QWidget()
         main_container_layout = QVBoxLayout(main_container_widget)
-        
-        # Top bar for global buttons/status
-        top_bar_layout = QHBoxLayout()
-        top_bar_layout.addStretch(1) # Push button to the right
-        top_bar_layout.addWidget(self.global_back_home_button)
-        main_container_layout.addLayout(top_bar_layout)
-        
+        main_container_layout.setContentsMargins(12, 8, 12, 8)
+        main_container_layout.setSpacing(8)
+        main_container_layout.addWidget(appbar)
         main_container_layout.addWidget(self.stacked_widget)
         self.setCentralWidget(main_container_widget)
 
         self.create_status_bar()
+        self.apply_theme()
+
+    def create_card_group(self, title: str) -> QGroupBox:
+        group = QGroupBox(title)
+        group.setFlat(False)
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(16, 12, 16, 16)
+        layout.setSpacing(12)
+        return group
 
     def create_home_widget(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(12)
 
-        # Top section with server info and connection status
-        top_layout = QHBoxLayout()
-        server_info_group = QGroupBox("Server Information")
-        server_info_layout = QFormLayout(server_info_group)
+        # Top: server info + connection status
+        top_row = QHBoxLayout()
+        top_row.setSpacing(12)
+
+        server_info_group = self.create_card_group("Server")
+        server_form = QFormLayout()
+        server_form.setLabelAlignment(Qt.AlignRight)
         self.server_name_label = QLabel(socket.gethostname())
-        self.server_ip_label = QLabel("Fetching IP...") # Initial text
+        self.server_ip_label = QLabel("Fetching IP...")
+        self.server_name_label.setObjectName("muted")
+        self.server_ip_label.setObjectName("muted")
+
+        ip_row = QHBoxLayout()
+        ip_row.setSpacing(8)
+        ip_row.addWidget(self.server_ip_label)
         self.show_server_details_button = QPushButton("Details")
-        self.show_server_details_button.setFixedSize(60, 25) # Smaller button
-        
-        ip_layout = QHBoxLayout()
-        ip_layout.addWidget(self.server_ip_label)
-        ip_layout.addWidget(self.show_server_details_button)
+        self.show_server_details_button.setFixedHeight(28)
+        self.show_server_details_button.setObjectName("secondaryButton")
+        ip_row.addWidget(self.show_server_details_button)
 
-        server_info_layout.addRow("Server Name:", self.server_name_label)
-        server_info_layout.addRow("Server IP:", ip_layout)
-        top_layout.addWidget(server_info_group)
+        server_form.addRow("Name:", self.server_name_label)
+        server_form.addRow("IP:", self._wrap(ip_row))
+        server_info_group.layout().addLayout(server_form)
+        top_row.addWidget(server_info_group, 1)
 
-        connection_status_group = QGroupBox("Connection Status")
-        connection_status_layout = QFormLayout(connection_status_group)
+        connection_group = self.create_card_group("Connection")
+        conn_form = QFormLayout()
+        conn_form.setLabelAlignment(Qt.AlignRight)
         self.connection_status_label = QLabel("Not Connected")
+        self.connection_status_label.setObjectName("statusLabel")
         self.connected_clients_label = QLabel("0")
-        connection_status_layout.addRow("Status:", self.connection_status_label)
-        connection_status_layout.addRow("Connected Clients:", self.connected_clients_label)
-        top_layout.addWidget(connection_status_group)
-        layout.addLayout(top_layout)
+        self.connected_clients_label.setObjectName("muted")
+        conn_form.addRow("Status:", self.connection_status_label)
+        conn_form.addRow("Clients:", self.connected_clients_label)
+        connection_group.layout().addLayout(conn_form)
+        top_row.addWidget(connection_group, 1)
 
-        # Client list
-        client_list_group = QGroupBox("Connected Clients")
-        client_list_layout = QVBoxLayout(client_list_group)
+        layout.addLayout(top_row)
+
+        # Connected Clients list (grid-like)
+        clients_group = self.create_card_group("Connected Clients")
+        clients_vbox = QVBoxLayout()
+        clients_vbox.setSpacing(8)
+
         self.client_list_widget = QListWidget()
-        client_list_layout.addWidget(self.client_list_widget)
-        
-        # Manual IP connection
-        manual_ip_layout = QHBoxLayout()
+        self.client_list_widget.setViewMode(QListView.IconMode)
+        self.client_list_widget.setIconSize(QSize(72, 72))
+        self.client_list_widget.setResizeMode(QListView.Adjust)
+        self.client_list_widget.setMovement(QListView.Static)
+        self.client_list_widget.setSpacing(18)
+        self.client_list_widget.setWordWrap(False)  # prevent multi-line wrap
+        self.client_list_widget.setUniformItemSizes(True)
+        self.client_list_widget.setSelectionMode(QAbstractItemView.NoSelection)
+        self.client_list_widget.setGridSize(QSize(220, 130))
+        clients_vbox.addWidget(self.client_list_widget)
+
+        # Manual connect and actions row
+        manual_row = QHBoxLayout()
+        manual_row.setSpacing(8)
         self.manual_ip_input = QLineEdit()
         self.manual_ip_input.setPlaceholderText("Enter client IP to connect manually")
         self.manual_ip_connect_button = QPushButton("Connect")
-        manual_ip_layout.addWidget(self.manual_ip_input)
-        manual_ip_layout.addWidget(self.manual_ip_connect_button)
-        client_list_layout.addLayout(manual_ip_layout)
+        manual_row.addWidget(self.manual_ip_input, 3)
+        manual_row.addWidget(self.manual_ip_connect_button, 1)
 
+        actions_row = QHBoxLayout()
+        actions_row.setSpacing(8)
         self.refresh_clients_button = QPushButton("Refresh Client List")
-        client_list_layout.addWidget(self.refresh_clients_button)
-        # Convenience: select all connected clients
+        self.refresh_clients_button.setObjectName("secondaryButton")
         self.select_all_clients_button = QPushButton("Select All Clients")
-        client_list_layout.addWidget(self.select_all_clients_button)
-        layout.addWidget(client_list_group)
+        actions_row.addWidget(self.refresh_clients_button)
+        actions_row.addStretch(1)
+        actions_row.addWidget(self.select_all_clients_button)
 
-        # File selection
-        file_selection_group = QGroupBox("File Selection")
-        file_selection_layout = QVBoxLayout(file_selection_group)
+        clients_group.layout().addLayout(clients_vbox)
+        clients_group.layout().addLayout(manual_row)
+        clients_group.layout().addLayout(actions_row)
+        layout.addWidget(clients_group, 5)
+
+        # File Selection
+        file_group = self.create_card_group("File Selection")
+        file_row = QHBoxLayout()
         self.select_files_button = QPushButton("Select Files to Share")
-        file_selection_layout.addWidget(self.select_files_button)
-        layout.addWidget(file_selection_group)
+        file_row.addStretch(1)
+        file_row.addWidget(self.select_files_button)
+        file_row.addStretch(1)
+        file_group.layout().addLayout(file_row)
+        layout.addWidget(file_group, 2)
 
         return widget
 
     def create_after_selection_widget(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(12)
 
-        # Selected files list
-        selected_files_group = QGroupBox("Selected Files")
-        selected_files_layout = QVBoxLayout(selected_files_group)
+        selected_group = self.create_card_group("Selected Files")
+        selected_vbox = QVBoxLayout()
         self.selected_files_list_widget = QListWidget()
-        selected_files_layout.addWidget(self.selected_files_list_widget)
-        layout.addWidget(selected_files_group)
+        self.selected_files_list_widget.setSpacing(8)
+        self.selected_files_list_widget.setFrameShape(QFrame.NoFrame)
+        selected_vbox.addWidget(self.selected_files_list_widget)
 
-        # Action buttons
-        button_layout = QHBoxLayout()
+        # Actions
+        actions = QHBoxLayout()
         self.add_more_files_button = QPushButton("Add More Files")
         self.remove_selected_files_button = QPushButton("Remove Selected")
-        self.send_files_button = QPushButton("Send to Selected Clients")
         self.select_all_files_button = QPushButton("Select All")
+        self.send_files_button = QPushButton("Send to Selected Clients")
         self.send_to_all_button = QPushButton("Send to All Clients")
-        button_layout.addWidget(self.add_more_files_button)
-        button_layout.addWidget(self.remove_selected_files_button)
-        button_layout.addWidget(self.select_all_files_button)
-        button_layout.addWidget(self.send_files_button)
-        button_layout.addWidget(self.send_to_all_button)
-        layout.addLayout(button_layout)
+        actions.addWidget(self.add_more_files_button)
+        actions.addWidget(self.remove_selected_files_button)
+        actions.addStretch(1)
+        actions.addWidget(self.select_all_files_button)
+        actions.addWidget(self.send_files_button)
+        actions.addWidget(self.send_to_all_button)
+        selected_vbox.addLayout(actions)
+
+        selected_group.layout().addLayout(selected_vbox)
+        layout.addWidget(selected_group)
 
         return widget
 
     def create_while_sharing_widget(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(12)
 
-        # Transfer progress list
-        transfer_progress_group = QGroupBox("File Transfer Progress")
-        transfer_progress_layout = QVBoxLayout(transfer_progress_group)
+        transfers_group = self.create_card_group("File Transfer Progress")
+        transfers_vbox = QVBoxLayout()
         self.transfer_list_widget = QListWidget()
-        transfer_progress_layout.addWidget(self.transfer_list_widget)
-        layout.addWidget(transfer_progress_group)
+        self.transfer_list_widget.setSpacing(10)
+        self.transfer_list_widget.setFrameShape(QFrame.NoFrame)
+        transfers_vbox.addWidget(self.transfer_list_widget)
 
-        # Action buttons
-        # Action buttons
-        button_layout = QHBoxLayout()
+        # Actions
+        actions = QHBoxLayout()
         self.cancel_all_button = QPushButton("Cancel All Transfers")
         self.cancel_selected_button = QPushButton("Cancel Selected")
-        # The back to home button is now global, so remove this one
-        button_layout.addWidget(self.cancel_all_button)
-        button_layout.addWidget(self.cancel_selected_button)
-        layout.addLayout(button_layout)
+        actions.addWidget(self.cancel_all_button)
+        actions.addStretch(1)
+        actions.addWidget(self.cancel_selected_button)
+        transfers_vbox.addLayout(actions)
 
-        # Prompt to share more once all transfers complete
+        # Share More prompt (hidden until needed)
         self.share_more_button = QPushButton("Share More")
         self.share_more_button.setVisible(False)
-        layout.addWidget(self.share_more_button)
+        transfers_vbox.addWidget(self.share_more_button, alignment=Qt.AlignHCenter)
+
+        transfers_group.layout().addLayout(transfers_vbox)
+        layout.addWidget(transfers_group)
 
         return widget
 
@@ -176,7 +280,107 @@ class ServerWindow(QMainWindow):
     def show_while_sharing(self):
         self.stacked_widget.setCurrentWidget(self.while_sharing_widget)
 
-# This is a placeholder for testing purposes
+    def update_status_bar(self, message: str, color: str = FG):
+        self.statusBar.setStyleSheet(f"QStatusBar {{ color: {color}; background: {BG2}; border-top: 1px solid {BORDER}; }}")
+        self.statusBar.showMessage(message)
+
+    def apply_theme(self):
+        qss_template = """
+        QWidget {
+            background-color: $BG1;
+            color: $FG;
+            font-size: 14px;
+        }
+        QGroupBox {
+            background-color: $BG2;
+            border: 1px solid $BORDER;
+            border-radius: 12px;
+            margin-top: 16px;
+            font-weight: 600;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            left: 10px;
+            top: 6px;
+            padding: 0 6px;
+            color: $PRIMARY;
+        }
+        QLabel#muted {
+            color: $FG_MUTED;
+        }
+        QLabel#statusLabel {
+            font-weight: 600;
+            color: $FG;
+        }
+        QLineEdit {
+            background: $BG1;
+            color: $FG;
+            border: 1px solid $BORDER;
+            border-radius: 8px;
+            padding: 8px 10px;
+            selection-background-color: $PRIMARY;
+        }
+        QPushButton {
+            background-color: $PRIMARY;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 8px 14px;
+            font-weight: 600;
+        }
+        QPushButton#secondaryButton {
+            background-color: #1f2937; /* gray-800 */
+            color: $FG;
+            border: 1px solid $BORDER;
+        }
+        QListWidget {
+            background: transparent;
+            border: none;
+        }
+        QListWidget::item {
+            border-radius: 10px;
+            padding: 10px;
+            margin: 4px;
+        }
+        QScrollBar:vertical {
+            background: transparent;
+            width: 10px;
+            margin: 0px;
+        }
+        QScrollBar::handle:vertical {
+            background: $BORDER;
+            border-radius: 5px;
+            min-height: 20px;
+        }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+            height: 0px; width: 0px; background: none; border: none;
+        }
+        QStatusBar {
+            color: $FG;
+            background: $BG2;
+            border-top: 1px solid $BORDER;
+        }
+        """
+        qss = Template(qss_template).substitute(
+            PRIMARY=PRIMARY,
+            ACCENT=ACCENT,
+            BG0=BG0,
+            BG1=BG1,
+            BG2=BG2,
+            BORDER=BORDER,
+            FG=FG,
+            FG_MUTED=FG_MUTED,
+        )
+        self.setStyleSheet(qss)
+
+    @staticmethod
+    def _wrap(layout: QLayout) -> QWidget:
+        w = QWidget()
+        w.setLayout(layout)
+        return w
+
+
+# For ad-hoc testing of the UI only
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     window = ServerWindow()

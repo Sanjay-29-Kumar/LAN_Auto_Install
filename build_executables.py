@@ -3,7 +3,34 @@ import shutil
 import subprocess
 import sys
 
-def build_executable(script_name, executable_name, extra_datas):
+try:
+    from PIL import Image
+except Exception:
+    Image = None
+
+def convert_png_to_ico(png_path: str, ico_path: str) -> bool:
+    """Convert a PNG to ICO with multiple sizes for Windows executables."""
+    if not os.path.isfile(png_path):
+        print(f"Icon source not found: {png_path}")
+        return False
+    if Image is None:
+        print("Pillow is not installed; cannot convert PNG to ICO. Install with: pip install pillow")
+        return False
+    try:
+        img = Image.open(png_path)
+        # Ensure RGBA for transparency handling
+        if img.mode not in ("RGBA", "RGB"):
+            img = img.convert("RGBA")
+        sizes = [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
+        img.save(ico_path, sizes=sizes)
+        print(f"Generated icon: {ico_path}")
+        return True
+    except Exception as e:
+        print(f"Failed to convert {png_path} to {ico_path}: {e}")
+        return False
+
+
+def build_executable(script_name, executable_name, extra_datas, icon_path=None):
     """
     Builds a single executable using PyInstaller.
     """
@@ -14,6 +41,12 @@ def build_executable(script_name, executable_name, extra_datas):
         '--windowed',
         '--clean',
     ]
+
+    if icon_path and os.path.isfile(icon_path):
+        command.extend(['--icon', icon_path])
+    else:
+        if icon_path:
+            print(f"Warning: Icon path not found or invalid, skipping icon: {icon_path}")
 
     for data in extra_datas:
         command.extend(['--add-data', data])
@@ -34,6 +67,7 @@ def build_executable(script_name, executable_name, extra_datas):
         print("Please install it using: pip install pyinstaller")
         return False
 
+
 def main():
     print("Starting the build process...")
 
@@ -45,6 +79,17 @@ def main():
             except PermissionError:
                 print(f"Could not remove '{dir_name}'. Please make sure no applications from a previous build are running.")
                 sys.exit(1)
+
+    # Prepare icons
+    icons_dir = os.path.join('build', 'icons')
+    os.makedirs(icons_dir, exist_ok=True)
+    client_png = 'client.png'
+    server_png = 'server.png'
+    client_ico = os.path.join(icons_dir, 'client.ico')
+    server_ico = os.path.join(icons_dir, 'server.ico')
+
+    client_icon_ok = convert_png_to_ico(client_png, client_ico)
+    server_icon_ok = convert_png_to_ico(server_png, server_ico)
 
     # Data to be included in both executables
     common_data = [
@@ -58,7 +103,8 @@ def main():
     server_built = build_executable(
         script_name='working_server.py',
         executable_name='LAN_Auto_Install_Server',
-        extra_datas=common_data
+        extra_datas=common_data,
+        icon_path=server_ico if server_icon_ok else None,
     )
 
     # Build the client
@@ -67,7 +113,8 @@ def main():
         client_built = build_executable(
             script_name='working_client.py',
             executable_name='LAN_Auto_Install_Client',
-            extra_datas=common_data
+            extra_datas=common_data,
+            icon_path=client_ico if client_icon_ok else None,
         )
 
         if client_built:
@@ -77,6 +124,7 @@ def main():
             print("\nClient build failed. Please check the errors above.")
     else:
         print("\nServer build failed. Aborting client build.")
+
 
 if __name__ == '__main__':
     main()

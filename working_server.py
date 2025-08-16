@@ -57,7 +57,11 @@ class ServerController:
         if ip_address:
             self.network_server.connect_to_client_manual(ip_address)
             self.ui.manual_ip_input.clear()
-            self.ui.status_bar.setText(f"Attempting to connect to {ip_address}...")
+            # Show message on themed status bar
+            try:
+                self.ui.statusBar.showMessage(f"Attempting to connect to {ip_address}...")
+            except Exception:
+                pass
         else:
             QMessageBox.warning(self.ui, "Invalid IP", "Please enter a valid IP address.")
 
@@ -91,7 +95,12 @@ class ServerController:
         self.ui.client_list_widget.clear()
         connected_clients = self.network_server.get_connected_clients()
         for client in connected_clients:
-            item = QListWidgetItem(f"{client['hostname']} ({client['ip']})")
+            hostname = client.get('hostname', '') or 'Unknown'
+            if len(hostname) > 26:
+                hostname = hostname[:26] + '…'
+            label = f"{hostname} ({client['ip']})"
+            item = QListWidgetItem(label)
+            item.setTextAlignment(Qt.AlignHCenter)
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Unchecked)
             self.ui.client_list_widget.addItem(item)
