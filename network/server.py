@@ -48,7 +48,7 @@ class NetworkServer(QObject):
             self.running = True
             threading.Thread(target=self._accept_connections, daemon=True).start()
             self.start_discovery_server()
-            self.server_ip = socket.gethostbyname(socket.gethostname())
+            self.server_ip = self._get_local_ip()
             self.server_ip_updated.emit(self.server_ip)
             print(f"Server listening on {self.host}:{self.port}")
             print(f"Discovery advertising on UDP {self.discovery_port}")
@@ -82,6 +82,16 @@ class NetworkServer(QObject):
                 client_ip = addr[0]
                 print(f"Accepted connection from {client_ip}:{addr[1]}")
                 
+                # Set socket options to improve stability
+                try:
+                    client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                except Exception:
+                    pass
+                try:
+                    client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                except Exception:
+                    pass
+                
                 # Receive client info
                 client_socket.settimeout(5) # Timeout for initial info
                 client_info_raw = client_socket.recv(CHUNK_SIZE)
@@ -100,7 +110,8 @@ class NetworkServer(QObject):
                             "socket": client_socket,
                             "info": client_info,
                             "files_to_send": [], # Queue for files to send to this client
-                            "current_file_transfer": None # {file_path, file_name, file_size, sent_bytes, file_handle, chunks_acked}
+                            "current_file_transfer": None, # {file_path, file_name, file_size, sent_bytes, file_handle, chunks_acked}
+                            "cancel_event": threading.Event()
                         }
                         client_thread = threading.Thread(target=self._handle_client, args=(client_socket, client_ip))
                         client_thread.daemon = True
@@ -147,9 +158,12 @@ class NetworkServer(QObject):
             except ConnectionResetError:
                 print(f"Client {client_ip} disconnected unexpectedly.")
                 break
-            except Exception as e:
+            except OSError:
+                print(f"Client {client_ip} socket error; disconnecting.")
+                break
+            except Exception:
                 if self.running:
-                    print(f"Error handling client {client_ip}: {e}")
+                    print(f"Error handling client {client_ip}; disconnecting.")
                 break
         self._disconnect_client(client_ip)
 
@@ -168,8 +182,35 @@ class NetworkServer(QObject):
                     self.file_transfer_states[client_ip][file_name]["completed"] = True
                     # Optionally, remove the file from the queue or current transfer
                     # For now, just mark as completed.
+        elif msg_type == "STATUS_UPDATE":
+            file_name = message.get("file_name")
+            status = message.get("status")
+            print(f"STATUS_UPDATE from {client_ip} for {file_name}: {status}")
+            self.status_update_received.emit(file_name, client_ip, status)
         else:
             print(f"Unknown message type from client {client_ip}: {message}")
+
+    def _get_local_ip(self):
+        # Determine the best local IP address to advertise/listen with
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            # This doesn't actually send data to the internet, just determines the outbound interface
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            if ip and not ip.startswith("127."):
+                return ip
+        except Exception:
+            pass
+        # Fallback: hostname resolution (may return 127.0.0.1 on some systems)
+        try:
+            ip = socket.gethostbyname(socket.gethostname())
+            if ip and not ip.startswith("127."):
+                return ip
+        except Exception:
+            pass
+        # Last resort
+        return "127.0.0.1"
 
     def get_server_ip(self):
         return self.server_ip if self.server_ip else "N/A"
@@ -231,19 +272,36 @@ class NetworkServer(QObject):
     def cancel_all_transfers(self):
         for client_ip in self.clients:
             self.clients[client_ip]["files_to_send"].clear()
-            if self.clients[client_ip]["current_file_transfer"]:
-                file_name = self.clients[client_ip]["current_file_transfer"]["file_name"]
+            # signal cancel for any ongoing transfer
+            if "cancel_event" in self.clients[client_ip]:
+                self.clients[client_ip]["cancel_event"].set()
+            current = self.clients[client_ip]["current_file_transfer"]
+            if current:
+                file_name = current["file_name"]
+                # Inform client to stop receiving this file
+                try:
+                    cancel_msg = json.dumps({"type": "CANCEL_TRANSFER", "file_name": file_name}).encode("utf-8") + b"\n"
+                    self.clients[client_ip]["socket"].sendall(cancel_msg)
+                except Exception:
+                    pass
                 self.status_update_received.emit(file_name, client_ip, "Cancelled")
                 self.status_update.emit(f"Cancelled transfer of {file_name} to {client_ip}", "red")
-                self.clients[client_ip]["current_file_transfer"] = None
         self.status_update.emit("All transfers cancelled.", "red")
 
     def cancel_file_transfer(self, client_ip, file_name):
         if client_ip in self.clients:
             # Check if the file is currently being transferred
-            if self.clients[client_ip]["current_file_transfer"] and \
-               self.clients[client_ip]["current_file_transfer"]["file_name"] == file_name:
-                self.clients[client_ip]["current_file_transfer"] = None
+            current = self.clients[client_ip]["current_file_transfer"]
+            if current and current["file_name"] == file_name:
+                # signal cancellation to the sending loop
+                if "cancel_event" in self.clients[client_ip]:
+                    self.clients[client_ip]["cancel_event"].set()
+                # Inform client to stop receiving this file
+                try:
+                    cancel_msg = json.dumps({"type": "CANCEL_TRANSFER", "file_name": file_name}).encode("utf-8") + b"\n"
+                    self.clients[client_ip]["socket"].sendall(cancel_msg)
+                except Exception:
+                    pass
                 self.status_update_received.emit(file_name, client_ip, "Cancelled")
                 self.status_update.emit(f"Cancelled current transfer of {file_name} to {client_ip}", "red")
             
@@ -333,7 +391,15 @@ class NetworkServer(QObject):
 
                 with open(file_path, 'rb') as f:
                     f.seek(sent_bytes) # Resume from where it left off if needed
+                    cancelled = False
+                    # ensure cancel_event exists and is cleared
+                    if "cancel_event" not in client_data:
+                        client_data["cancel_event"] = threading.Event()
+                    client_data["cancel_event"].clear()
                     while sent_bytes < file_size and self.running:
+                        if client_data["cancel_event"].is_set():
+                            cancelled = True
+                            break
                         chunk = f.read(CHUNK_SIZE)
                         if not chunk:
                             break
@@ -346,9 +412,16 @@ class NetworkServer(QObject):
                         # Add logic for chunk acknowledgment and retransmission here if needed
                         # For now, it's a simple stream.
 
-                print(f"Finished sending {file_name} to {client_ip}")
-                self.status_update_received.emit(file_name, client_ip, "Sent - Awaiting ACK")
-                self.status_update.emit(f"Sent {file_name} to {client_ip}, awaiting ACK", "lightblue")
+                if cancelled:
+                    print(f"Transfer of {file_name} to {client_ip} cancelled.")
+                    self.status_update_received.emit(file_name, client_ip, "Cancelled")
+                    self.status_update.emit(f"Cancelled transfer of {file_name} to {client_ip}", "red")
+                else:
+                    print(f"Finished sending {file_name} to {client_ip}")
+                    # Ensure final 100% update is emitted
+                    self.file_progress.emit(file_name, client_ip, 100)
+                    self.status_update_received.emit(file_name, client_ip, "Sent - Awaiting ACK")
+                    self.status_update.emit(f"Sent {file_name} to {client_ip}, awaiting ACK", "lightblue")
 
             except ConnectionResetError:
                 print(f"Client {client_ip} disconnected during transfer of {file_name}.")
@@ -356,10 +429,16 @@ class NetworkServer(QObject):
                 self.status_update.emit(f"Client {client_ip} disconnected during {file_name} transfer", "red")
                 self._disconnect_client(client_ip)
                 break # Exit loop for this client
-            except Exception as e:
-                print(f"Error sending file {file_name} to {client_ip}: {e}")
-                self.status_update_received.emit(file_name, client_ip, f"Not Sent (Error: {e})")
-                self.status_update.emit(f"Error sending {file_name} to {client_ip}: {e}", "red")
+            except OSError:
+                print(f"Socket error sending {file_name} to {client_ip}; disconnecting client.")
+                self.status_update_received.emit(file_name, client_ip, "Not Sent (Socket Error)")
+                self.status_update.emit(f"Socket error during {file_name} to {client_ip}", "red")
+                self._disconnect_client(client_ip)
+                break
+            except Exception:
+                print(f"Unexpected error sending {file_name} to {client_ip}; marking as not sent.")
+                self.status_update_received.emit(file_name, client_ip, "Not Sent (Unexpected Error)")
+                self.status_update.emit(f"Error sending {file_name} to {client_ip}", "red")
             finally:
                 client_data["current_file_transfer"] = None # Reset for next file
 
@@ -394,22 +473,22 @@ class NetworkServer(QObject):
         print("Discovery server stopped.")
 
     def _discovery_advertisement_loop(self):
-        server_info = {
-            "type": "SERVER_ADVERTISEMENT",
-            "ip": socket.gethostbyname(socket.gethostname()),
-            "port": self.port,
-            "hostname": socket.gethostname(),
-            "os_type": platform.system(),
-            "is_windows": platform.system() == "Windows"
-        }
-        message = json.dumps(server_info).encode('utf-8')
-
         while self.discovery_server_running:
             try:
                 # Listen for discovery requests
                 self.discovery_socket.settimeout(1) # Timeout for recvfrom
                 data, addr = self.discovery_socket.recvfrom(1024)
                 if data.decode('utf-8') == "DISCOVER_SERVER":
+                    # Build advertisement with the most accurate IP at send time
+                    server_info = {
+                        "type": "SERVER_ADVERTISEMENT",
+                        "ip": self.server_ip or self._get_local_ip(),
+                        "port": self.port,
+                        "hostname": socket.gethostname(),
+                        "os_type": platform.system(),
+                        "is_windows": platform.system() == "Windows"
+                    }
+                    message = json.dumps(server_info).encode('utf-8')
                     # Respond to discovery request
                     self.discovery_socket.sendto(message, addr)
                     print(f"Sent advertisement to {addr[0]}")

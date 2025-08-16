@@ -4,6 +4,7 @@ Main client window for the LAN Auto Install application.
 
 import sys
 import os
+import socket
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5.QtGui import *
@@ -52,7 +53,7 @@ class ClientWindow(QMainWindow):
         top_layout = QHBoxLayout()
         client_info_group = QGroupBox("Client Information")
         client_info_layout = QFormLayout(client_info_group)
-        self.client_name_label = QLabel(self.network_client.local_ip) # Placeholder for now
+        self.client_name_label = QLabel(socket.gethostname())
         self.client_ip_label = QLabel(self.network_client.local_ip)
         client_info_layout.addRow("Client Name:", self.client_name_label)
         client_info_layout.addRow("Client IP:", self.client_ip_label)

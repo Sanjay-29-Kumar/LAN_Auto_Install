@@ -10,10 +10,12 @@ class FileTransferWidget(QWidget):
     """
     A custom widget to display the progress of a single file transfer.
     """
-    def __init__(self, file_name, file_size, parent=None):
+    def __init__(self, file_name, file_size, client_ip=None, parent=None):
         super().__init__(parent)
         self.file_name = file_name
         self.file_size = file_size
+        # Store the target client IP (if provided) for reference in controllers
+        self.client_ip = client_ip
 
         self.init_ui()
 

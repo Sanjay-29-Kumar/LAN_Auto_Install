@@ -81,7 +81,7 @@ class ServerController:
             """
             QMessageBox.information(self.ui, "Client Profile", profile_text)
 
-    def update_client_list(self):
+    def update_client_list(self, *args):
         self.ui.client_list_widget.clear()
         connected_clients = self.network_server.get_connected_clients()
         for client in connected_clients:
@@ -206,18 +206,20 @@ class ServerController:
 
     def cancel_single_transfer(self, file_name, client_ip):
         self.network_server.cancel_file_transfer(client_ip, file_name)
-        # Optionally update UI to reflect cancellation
-        if (file_name, client_ip) in self.transfer_widgets:
-            widget = self.transfer_widgets[(file_name, client_ip)]
-            widget.set_status("Cancelled by Server", "red")
-            widget.set_progress(0) # Reset progress or indicate cancellation visually
+        # Remove the widget row from UI on cancel
+        for i in range(self.ui.transfer_list_widget.count()):
+            item = self.ui.transfer_list_widget.item(i)
+            widget = self.ui.transfer_list_widget.itemWidget(item)
+            if widget and widget.file_name == file_name and widget.client_ip == client_ip:
+                self.ui.transfer_list_widget.takeItem(i)
+                break
+        self.transfer_widgets.pop((file_name, client_ip), None)
 
     def cancel_all_transfers(self):
         self.network_server.cancel_all_transfers()
-        # Update UI for all transfers
-        for (file_name, client_ip), widget in self.transfer_widgets.items():
-            widget.set_status("Cancelled by Server", "red")
-            widget.set_progress(0)
+        # Clear the UI transfer list entirely
+        self.ui.transfer_list_widget.clear()
+        self.transfer_widgets.clear()
 
     def update_status_bar(self, message, color):
         """Updates the status bar with a message and color."""

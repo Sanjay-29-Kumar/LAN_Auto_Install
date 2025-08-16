@@ -24,6 +24,8 @@ class ClientController:
         self.network_client.connection_status.connect(self.update_connection_status)
         self.network_client.file_received.connect(self.add_received_file)
         self.network_client.file_progress.connect(self.update_transfer_progress)
+        # Update receiving status (e.g., cancelled/disconnected)
+        self.network_client.status_update_received.connect(self.update_transfer_status)
 
         # Connect UI signals to controller slots
         self.ui.refresh_servers_button.clicked.connect(self.refresh_servers)
@@ -69,7 +71,7 @@ class ClientController:
             print(f"Auto-connect error: {e}")
 
     def update_connection_status(self, server_ip, connected):
-        self.ui.connection_status_label.setText("Connected" if connected else "Not Connected")
+        self.ui.connection_status_label.setText(f"Connected to {server_ip}" if connected else f"Disconnected from {server_ip}")
         # You can also update the server list item to show connection status
         for i in range(self.ui.server_list_widget.count()):
             item = self.ui.server_list_widget.item(i)

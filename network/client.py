@@ -4,6 +4,8 @@ import json
 import os
 import time
 import platform
+import subprocess
+import shutil
 from PyQt5.QtCore import QObject, pyqtSignal, QTimer
 from . import protocol
 from collections import defaultdict
@@ -18,13 +20,14 @@ class NetworkClient(QObject):
     file_received = pyqtSignal(dict) # Emits {name, size, sender, path}
     file_progress = pyqtSignal(str, str, int) # Emits (file_name, server_ip, percentage)
     status_update = pyqtSignal(str, str) # Emits (message, color)
+    status_update_received = pyqtSignal(str, str, str) # Emits (file_name, server_ip, status)
 
     def __init__(self, host='0.0.0.0', port=0): # Client binds to 0.0.0.0 and an ephemeral port
         super().__init__()
         self.host = host
         self.port = port
         self.client_socket = None
-        self.local_ip = '0.0.0.0' # Initialize local_ip
+        self.local_ip = self._get_local_ip()  # Determine actual local IP early for UI display
         self.connected_servers = {} # {ip: {socket: ..., thread: ..., info: ...}}
         self.servers = {} # Discovered servers {ip: info}
         self.running = False
@@ -33,6 +36,26 @@ class NetworkClient(QObject):
         self.discovery_thread = None
         self.received_files_path = os.path.join(os.getcwd(), RECEIVED_FILES_DIR)
         os.makedirs(self.received_files_path, exist_ok=True)
+        # Track reconnect attempts to avoid duplicates
+        self._reconnect_in_progress = set()
+
+    def _get_local_ip(self):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            if ip and not ip.startswith("127."):
+                return ip
+        except Exception:
+            pass
+        try:
+            ip = socket.gethostbyname(socket.gethostname())
+            if ip and not ip.startswith("127."):
+                return ip
+        except Exception:
+            pass
+        return "127.0.0.1"
 
     def start_client(self):
         if self.running:
@@ -63,6 +86,16 @@ class NetworkClient(QObject):
             client_socket.connect((server_ip, server_port))
             client_socket.settimeout(None) # Remove timeout after connection
 
+            # Enable TCP keepalive to reduce idle disconnects
+            try:
+                client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            except Exception:
+                pass
+            try:
+                client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except Exception:
+                pass
+
             print(f"Connected to server {server_ip}:{server_port}")
             
             # Send client info to server
@@ -79,11 +112,17 @@ class NetworkClient(QObject):
             server_thread.daemon = True
             server_thread.start()
 
+            # Start heartbeat thread to keep connection alive
+            heartbeat_thread = threading.Thread(target=self._heartbeat_loop, args=(server_ip,), daemon=True)
+            heartbeat_thread.start()
+
             self.connected_servers[server_ip] = {
                 "socket": client_socket,
                 "thread": server_thread,
                 "info": self.servers.get(server_ip, {"ip": server_ip, "port": server_port, "hostname": "Unknown"})
             }
+            # Store heartbeat thread
+            self.connected_servers[server_ip]["heartbeat_thread"] = heartbeat_thread
             self.connection_status.emit(server_ip, True)
             self.status_update.emit(f"Connected to {server_ip}", "green")
 
@@ -105,6 +144,19 @@ class NetworkClient(QObject):
             try:
                 data = server_socket.recv(CHUNK_SIZE)
                 if not data:
+                    # Server closed connection. If mid-file, mark as cancelled/incomplete
+                    if current_file_transfer.get("receiving_file") and \
+                       current_file_transfer.get("received_bytes", 0) < current_file_transfer.get("file_size", 0):
+                        try:
+                            fh = current_file_transfer.get("file_handle")
+                            if fh:
+                                fh.close()
+                        except Exception:
+                            pass
+                        file_name = current_file_transfer.get("file_name", "")
+                        self.status_update_received.emit(file_name, server_ip, "Not Received (Disconnected)")
+                        self.status_update.emit(f"Disconnected during {file_name} from {server_ip}", "red")
+                        current_file_transfer.clear()
                     break
 
                 buffer += data
@@ -116,8 +168,8 @@ class NetworkClient(QObject):
                         message = json.loads(line.decode('utf-8'))
                         self._process_server_message(server_ip, message, current_file_transfer)
                         buffer = remaining_buffer # Update buffer after processing JSON
-                    except json.JSONDecodeError:
-                        # If it's not a complete JSON message, it might be file data
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        # If it's not a complete/valid JSON message, it might be file data
                         # This is a simplified approach; a robust protocol would distinguish
                         # between metadata and file data more explicitly (e.g., length prefixes)
                         if current_file_transfer.get("receiving_file"):
@@ -169,6 +221,22 @@ class NetworkClient(QObject):
                 "path": current_file_transfer["file_path"]
             })
             self.status_update.emit(f"Receiving {file_name} from {server_ip}", "orange")
+        elif msg_type == "CANCEL_TRANSFER":
+            file_name = message.get("file_name")
+            # If we are currently receiving this file, close it and mark cancelled
+            if current_file_transfer.get("receiving_file") and current_file_transfer.get("file_name") == file_name:
+                try:
+                    fh = current_file_transfer.get("file_handle")
+                    if fh:
+                        fh.close()
+                except Exception:
+                    pass
+                current_file_transfer.clear()
+            self.status_update_received.emit(file_name, server_ip, "Cancelled by Server")
+            self.status_update.emit(f"Transfer of {file_name} cancelled by server {server_ip}", "red")
+        elif msg_type == "HEARTBEAT":
+            # No-op heartbeat from server; keeps NAT mappings alive on some paths
+            pass
         else:
             print(f"Unknown message type from {server_ip}: {message}")
 
@@ -191,7 +259,13 @@ class NetworkClient(QObject):
             file_handle.close()
             print(f"Finished receiving {file_name} from {server_ip}")
             self.status_update.emit(f"Received {file_name} from {server_ip}", "lightgreen")
-            self._send_file_ack(server_ip, file_name, "Acknowledged")
+            # Inform server that the file was received successfully
+            self._send_file_ack(server_ip, file_name, "Received")
+            # Attempt to install if applicable and send status update
+            try:
+                self._post_receive_actions(server_ip, file_name, current_file_transfer["file_path"])
+            except Exception as e:
+                self.status_update.emit(f"Post-receive actions failed for {file_name}: {e}", "red")
             current_file_transfer.clear() # Reset for next file
 
     def _send_file_ack(self, server_ip, file_name, status):
@@ -207,6 +281,127 @@ class NetworkClient(QObject):
             except Exception as e:
                 print(f"Error sending ACK to {server_ip}: {e}")
 
+    def _send_status_update(self, server_ip, file_name, status):
+        if server_ip in self.connected_servers:
+            msg = {
+                "type": "STATUS_UPDATE",
+                "file_name": file_name,
+                "status": status
+            }
+            try:
+                self.connected_servers[server_ip]["socket"].sendall(json.dumps(msg).encode('utf-8') + b'\n')
+                print(f"Sent STATUS_UPDATE for {file_name} to {server_ip}: {status}")
+            except Exception as e:
+                print(f"Error sending STATUS_UPDATE to {server_ip}: {e}")
+
+    def _heartbeat_loop(self, server_ip):
+        # Periodically send heartbeat to keep the connection alive
+        while self.running and server_ip in self.connected_servers:
+            try:
+                hb = {"type": "HEARTBEAT"}
+                self.connected_servers[server_ip]["socket"].sendall(json.dumps(hb).encode('utf-8') + b'\n')
+            except Exception:
+                pass
+            time.sleep(10)
+
+    def _schedule_reconnect(self, server_ip, server_port):
+        if not self.running:
+            return
+        if server_ip in self.connected_servers:
+            return
+        if server_ip in self._reconnect_in_progress:
+            return
+        self._reconnect_in_progress.add(server_ip)
+        threading.Thread(target=self._reconnect_loop, args=(server_ip, server_port), daemon=True).start()
+
+    def _reconnect_loop(self, server_ip, server_port):
+        # Keep trying to reconnect until connected or client stopped
+        backoff = 3
+        while self.running and server_ip not in self.connected_servers:
+            try:
+                self.status_update.emit(f"Reconnecting to {server_ip}...", "orange")
+                self._connect_to_server(server_ip, server_port)
+                break
+            except Exception:
+                pass
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 30)
+        self._reconnect_in_progress.discard(server_ip)
+
+    def _is_installer(self, file_path):
+        ext = os.path.splitext(file_path)[1].lower()
+        # Common installer extensions
+        return ext in [
+            ".msi", ".exe", ".bat", ".cmd", ".ps1",  # Windows
+            ".sh", ".deb", ".rpm",                        # Linux
+            ".pkg", ".dmg"                                 # macOS
+        ]
+
+    def _attempt_install(self, file_path):
+        system = platform.system()
+        ext = os.path.splitext(file_path)[1].lower()
+        try:
+            if system == "Windows":
+                if ext == ".msi":
+                    # Silent MSI install
+                    result = subprocess.run(["msiexec", "/i", file_path, "/qn", "/norestart"], capture_output=True)
+                    return (result.returncode == 0, "MSI install rc=" + str(result.returncode))
+                elif ext == ".exe":
+                    # Try common silent flags
+                    silent_flags = [["/S"], ["/silent"], ["/quiet"], ["/VERYSILENT"], ["/s"]]
+                    for flags in silent_flags:
+                        result = subprocess.run([file_path] + flags, capture_output=True)
+                        if result.returncode == 0:
+                            return (True, "EXE installed silently")
+                    # As a fallback, run normally (may show UI)
+                    subprocess.Popen([file_path])
+                    return (False, "EXE started (manual setup likely)")
+                elif ext in (".bat", ".cmd"):
+                    subprocess.Popen([file_path], shell=True)
+                    return (False, "Script started (manual setup likely)")
+                elif ext == ".ps1":
+                    subprocess.Popen(["powershell", "-ExecutionPolicy", "Bypass", "-File", file_path], shell=False)
+                    return (False, "PowerShell script started (manual setup likely)")
+                else:
+                    return (False, "Unsupported Windows installer type")
+            elif system == "Linux":
+                if ext == ".sh":
+                    subprocess.Popen(["bash", file_path])
+                    return (False, "Shell script started (manual setup likely)")
+                elif ext == ".deb":
+                    result = subprocess.run(["sudo", "dpkg", "-i", file_path])
+                    return (result.returncode == 0, "dpkg rc=" + str(result.returncode))
+                elif ext == ".rpm":
+                    result = subprocess.run(["sudo", "rpm", "-i", file_path])
+                    return (result.returncode == 0, "rpm rc=" + str(result.returncode))
+                else:
+                    return (False, "Unsupported Linux installer type")
+            elif system == "Darwin":
+                if ext == ".pkg":
+                    result = subprocess.run(["sudo", "installer", "-pkg", file_path, "-target", "/"])
+                    return (result.returncode == 0, "installer rc=" + str(result.returncode))
+                elif ext == ".dmg":
+                    return (False, "DMG requires manual mount/install")
+                else:
+                    return (False, "Unsupported macOS installer type")
+        except Exception as e:
+            return (False, f"Install attempt error: {e}")
+        return (False, "No install action taken")
+
+    def _post_receive_actions(self, server_ip, file_name, file_path):
+        if self._is_installer(file_path):
+            installed, msg = self._attempt_install(file_path)
+            if installed:
+                self._send_status_update(server_ip, file_name, "Installed")
+                self.status_update.emit(f"Installed {file_name}", "lightgreen")
+            else:
+                # Could not install silently; manual setup likely required
+                self._send_status_update(server_ip, file_name, "Need Manual Setup")
+                self.status_update.emit(f"{file_name}: {msg}", "orange")
+        else:
+            # Not an installer; mark as received successfully
+            self._send_status_update(server_ip, file_name, "Received Successfully")
+
     def _disconnect_from_server(self, server_ip):
         if server_ip in self.connected_servers:
             server_socket = self.connected_servers[server_ip]["socket"]
@@ -219,6 +414,9 @@ class NetworkClient(QObject):
             self.connection_status.emit(server_ip, False)
             self.status_update.emit(f"Disconnected from {server_ip}", "red")
             print(f"Disconnected from server {server_ip}.")
+            # Schedule auto-reconnect unless stopped manually
+            server_port = self.servers.get(server_ip, {}).get('port', protocol.COMMAND_PORT)
+            self._schedule_reconnect(server_ip, server_port)
 
     # Discovery Client for finding servers
     def start_discovery_client(self):
