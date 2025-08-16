@@ -6,6 +6,7 @@ import time
 import platform
 import subprocess
 import shutil
+import ctypes
 from PyQt5.QtCore import QObject, pyqtSignal, QTimer
 from . import protocol
 from collections import defaultdict
@@ -161,7 +162,21 @@ class NetworkClient(QObject):
 
                 buffer += data
 
-                # Process JSON messages first
+                # If currently receiving a file, consume exactly the remaining bytes first
+                if current_file_transfer.get("receiving_file"):
+                    bytes_needed = current_file_transfer["file_size"] - current_file_transfer["received_bytes"]
+                    if bytes_needed > 0:
+                        if len(buffer) >= bytes_needed:
+                            # Write only the needed bytes to finish the file
+                            self._receive_file_chunk(server_ip, buffer[:bytes_needed], current_file_transfer)
+                            buffer = buffer[bytes_needed:]
+                        else:
+                            # Not enough data yet; write all and wait for more
+                            self._receive_file_chunk(server_ip, buffer, current_file_transfer)
+                            buffer = b""
+                            continue  # Wait for more data; skip JSON parsing for now
+
+                # Process JSON messages in buffer after file consumption
                 while b'\n' in buffer:
                     line, remaining_buffer = buffer.split(b'\n', 1)
                     try:
@@ -169,22 +184,20 @@ class NetworkClient(QObject):
                         self._process_server_message(server_ip, message, current_file_transfer)
                         buffer = remaining_buffer # Update buffer after processing JSON
                     except (json.JSONDecodeError, UnicodeDecodeError):
-                        # If it's not a complete/valid JSON message, it might be file data
-                        # This is a simplified approach; a robust protocol would distinguish
-                        # between metadata and file data more explicitly (e.g., length prefixes)
+                        # If it's not valid JSON and we are (now) receiving a file, treat entire buffer as file data
                         if current_file_transfer.get("receiving_file"):
-                            self._receive_file_chunk(server_ip, line + remaining_buffer, current_file_transfer)
-                            buffer = b"" # All data treated as file chunk
+                            bytes_needed = current_file_transfer["file_size"] - current_file_transfer["received_bytes"]
+                            to_write = buffer[:bytes_needed]
+                            if to_write:
+                                self._receive_file_chunk(server_ip, to_write, current_file_transfer)
+                            buffer = buffer[len(to_write):]
+                            # If still receiving, wait for more data
+                            if current_file_transfer.get("receiving_file"):
+                                break
                         else:
                             print(f"Non-JSON data or incomplete JSON from {server_ip}: {line.decode('utf-8', errors='ignore')}")
-                            buffer = remaining_buffer # Keep processing if it was just incomplete JSON
-                        break # Exit inner loop to process remaining buffer as file data or next message
-                
-                # If buffer still contains data after JSON processing, and we are receiving a file,
-                # treat the rest as file data.
-                if buffer and current_file_transfer.get("receiving_file"):
-                    self._receive_file_chunk(server_ip, buffer, current_file_transfer)
-                    buffer = b"" # Clear buffer after processing as file chunk
+                            buffer = remaining_buffer
+                        break
 
             except ConnectionResetError:
                 print(f"Server {server_ip} disconnected unexpectedly.")
@@ -258,14 +271,17 @@ class NetworkClient(QObject):
         if current_file_transfer["received_bytes"] >= file_size:
             file_handle.close()
             print(f"Finished receiving {file_name} from {server_ip}")
-            self.status_update.emit(f"Received {file_name} from {server_ip}", "lightgreen")
             # Inform server that the file was received successfully
             self._send_file_ack(server_ip, file_name, "Received")
-            # Attempt to install if applicable and send status update
+            # Also update local UI row
+            self.status_update_received.emit(file_name, server_ip, "Received")
+            # Offload install to background worker; do not block socket thread
             try:
-                self._post_receive_actions(server_ip, file_name, current_file_transfer["file_path"])
-            except Exception as e:
-                self.status_update.emit(f"Post-receive actions failed for {file_name}: {e}", "red")
+                file_path = current_file_transfer["file_path"]
+            except Exception:
+                file_path = None
+            if file_path:
+                threading.Thread(target=self._post_receive_actions_wrapper, args=(server_ip, file_name, file_path), daemon=True).start()
             current_file_transfer.clear() # Reset for next file
 
     def _send_file_ack(self, server_ip, file_name, status):
@@ -293,6 +309,76 @@ class NetworkClient(QObject):
                 print(f"Sent STATUS_UPDATE for {file_name} to {server_ip}: {status}")
             except Exception as e:
                 print(f"Error sending STATUS_UPDATE to {server_ip}: {e}")
+
+    def _run_process_silent(self, args):
+        # Run a process with no visible window (Windows) and a generous timeout
+        si = None
+        creationflags = 0
+        if platform.system() == "Windows":
+            try:
+                si = subprocess.STARTUPINFO()
+                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            except Exception:
+                si = None
+                creationflags = 0
+        return subprocess.run(args, capture_output=True, timeout=900, startupinfo=si, creationflags=creationflags)
+
+    def _is_admin(self):
+        if platform.system() != "Windows":
+            return False
+        try:
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except Exception:
+            return False
+
+    def _run_via_schtasks(self, args_list):
+        if platform.system() != "Windows":
+            return (False, "schtasks not supported")
+        try:
+            task_name = f"LANAutoInstall_{int(time.time())}"
+            # Quote args for cmd
+            def q(a):
+                if not a:
+                    return '""'
+                return f'"{a}"' if (' ' in a or '\\' in a or '"' in a) else a
+            cmd = " ".join(q(a) for a in args_list)
+            tr = f"cmd /c {cmd}"
+            start_time = time.strftime("%H:%M", time.localtime(time.time() + 10))
+            create = [
+                "schtasks", "/Create", "/TN", task_name,
+                "/TR", tr, "/SC", "ONCE", "/ST", start_time,
+                "/RU", "SYSTEM", "/RL", "HIGHEST", "/F"
+            ]
+            res_create = subprocess.run(create, capture_output=True, text=True)
+            if res_create.returncode != 0:
+                return (False, f"schtasks create rc={res_create.returncode}: {res_create.stdout or res_create.stderr}")
+            subprocess.run(["schtasks", "/Run", "/TN", task_name], capture_output=True)
+            # Poll up to 10 minutes
+            deadline = time.time() + 600
+            last_rc = None
+            while time.time() < deadline:
+                qres = subprocess.run(["schtasks", "/Query", "/TN", task_name, "/FO", "LIST", "/V"], capture_output=True, text=True)
+                out = qres.stdout or ""
+                for line in out.splitlines():
+                    if line.strip().startswith("Last Run Result:"):
+                        last_rc = line.split(":", 1)[1].strip()
+                        break
+                if last_rc and last_rc.upper().startswith("0X0"):
+                    subprocess.run(["schtasks", "/Delete", "/TN", task_name, "/F"], capture_output=True)
+                    return (True, "Installed via schtasks")
+                time.sleep(5)
+            subprocess.run(["schtasks", "/Delete", "/TN", task_name, "/F"], capture_output=True)
+            return (False, f"schtasks timeout; last result: {last_rc}")
+        except Exception as e:
+            return (False, f"schtasks error: {e}")
+
+    def _post_receive_actions_wrapper(self, server_ip, file_name, file_path):
+        try:
+            self._post_receive_actions(server_ip, file_name, file_path)
+        except Exception as e:
+            # Keep errors in status bar; no ACKs here
+            self.status_update.emit(f"Post-receive actions failed for {file_name}: {e}", "red")
 
     def _heartbeat_loop(self, server_ip):
         # Periodically send heartbeat to keep the connection alive
@@ -343,43 +429,72 @@ class NetworkClient(QObject):
         try:
             if system == "Windows":
                 if ext == ".msi":
-                    # Silent MSI install
-                    result = subprocess.run(["msiexec", "/i", file_path, "/qn", "/norestart"], capture_output=True)
-                    return (result.returncode == 0, "MSI install rc=" + str(result.returncode))
+                    # Always run via Task Scheduler as SYSTEM to avoid UAC prompts
+                    ok, msg = self._run_via_schtasks(["msiexec", "/i", file_path, "/qn", "/norestart", "ALLUSERS=1"])
+                    if ok:
+                        return (True, "MSI installed silently (SYSTEM)")
+                    # As last resort, run msiexec without flags as SYSTEM (no user prompts)
+                    ok, msg = self._run_via_schtasks(["msiexec", "/i", file_path])
+                    if ok:
+                        return (True, "MSI installed (SYSTEM)")
+                    return (False, f"MSI install failed: {msg}")
                 elif ext == ".exe":
-                    # Try common silent flags
-                    silent_flags = [["/S"], ["/silent"], ["/quiet"], ["/VERYSILENT"], ["/s"]]
-                    for flags in silent_flags:
-                        result = subprocess.run([file_path] + flags, capture_output=True)
-                        if result.returncode == 0:
-                            return (True, "EXE installed silently")
-                    # As a fallback, run normally (may show UI)
-                    subprocess.Popen([file_path])
-                    return (False, "EXE started (manual setup likely)")
+                    # Always run via Task Scheduler as SYSTEM to avoid UAC prompts
+                    candidates = [
+                        [file_path, "/S"],
+                        [file_path, "/SILENT"],
+                        [file_path, "/VERYSILENT", "/SP-", "/SUPPRESSMSGBOXES", "/NORESTART"],
+                        [file_path, "/silent"],
+                        [file_path, "/quiet"],
+                        [file_path, "/quiet", "/norestart"],
+                        [file_path, "/passive", "/norestart"],
+                        [file_path, "/s"],
+                        [file_path, "/sAll"],
+                        [file_path, "--silent"],
+                        [file_path, "--silentInstall"],
+                        [file_path, "/sfx_noui"],
+                        # InstallShield and MSI-wrapper variants
+                        [file_path, "/s", "/v", "/qn"],
+                        [file_path, "/s", "/v\"/qn /norestart /L*v install.log\""],
+                        [file_path, "/v", "/qn"],
+                        # EULA acceptance variants
+                        [file_path, "/S", "ACCEPT=YES", "EULA=YES", "AGREETOLICENSE=YES", "SLA=1"],
+                    ]
+                    for args in candidates:
+                        ok, msg = self._run_via_schtasks(args)
+                        if ok:
+                            return (True, "EXE installed silently (SYSTEM)")
+                    # Last resort: run without flags as SYSTEM (no user prompts, may display UI in session 0)
+                    ok, msg = self._run_via_schtasks([file_path])
+                    if ok:
+                        return (True, "EXE installed (SYSTEM)")
+                    return (False, f"EXE install failed: {msg}")
                 elif ext in (".bat", ".cmd"):
-                    subprocess.Popen([file_path], shell=True)
-                    return (False, "Script started (manual setup likely)")
+                    return (False, "Batch scripts require manual setup")
                 elif ext == ".ps1":
-                    subprocess.Popen(["powershell", "-ExecutionPolicy", "Bypass", "-File", file_path], shell=False)
-                    return (False, "PowerShell script started (manual setup likely)")
+                    return (False, "PowerShell script requires manual setup")
                 else:
                     return (False, "Unsupported Windows installer type")
             elif system == "Linux":
                 if ext == ".sh":
-                    subprocess.Popen(["bash", file_path])
-                    return (False, "Shell script started (manual setup likely)")
+                    return (False, "Shell script requires manual setup")
                 elif ext == ".deb":
-                    result = subprocess.run(["sudo", "dpkg", "-i", file_path])
-                    return (result.returncode == 0, "dpkg rc=" + str(result.returncode))
+                    try:
+                        result = subprocess.run(["dpkg", "-i", file_path], capture_output=True, timeout=600)
+                        return (result.returncode == 0, "dpkg rc=" + str(result.returncode))
+                    except Exception as e:
+                        return (False, f"dpkg error: {e}")
                 elif ext == ".rpm":
-                    result = subprocess.run(["sudo", "rpm", "-i", file_path])
-                    return (result.returncode == 0, "rpm rc=" + str(result.returncode))
+                    try:
+                        result = subprocess.run(["rpm", "-i", file_path], capture_output=True, timeout=600)
+                        return (result.returncode == 0, "rpm rc=" + str(result.returncode))
+                    except Exception as e:
+                        return (False, f"rpm error: {e}")
                 else:
                     return (False, "Unsupported Linux installer type")
             elif system == "Darwin":
                 if ext == ".pkg":
-                    result = subprocess.run(["sudo", "installer", "-pkg", file_path, "-target", "/"])
-                    return (result.returncode == 0, "installer rc=" + str(result.returncode))
+                    return (False, "pkg install requires admin privileges (manual setup)")
                 elif ext == ".dmg":
                     return (False, "DMG requires manual mount/install")
                 else:
@@ -390,14 +505,27 @@ class NetworkClient(QObject):
 
     def _post_receive_actions(self, server_ip, file_name, file_path):
         if self._is_installer(file_path):
+            # Indicate installation started in background (both server and local UI)
+            self._send_status_update(server_ip, file_name, "Installing")
+            self.status_update_received.emit(file_name, server_ip, "Installing")
             installed, msg = self._attempt_install(file_path)
             if installed:
                 self._send_status_update(server_ip, file_name, "Installed")
-                self.status_update.emit(f"Installed {file_name}", "lightgreen")
+                self.status_update_received.emit(file_name, server_ip, "Installed")
             else:
-                # Could not install silently; manual setup likely required
-                self._send_status_update(server_ip, file_name, "Need Manual Setup")
-                self.status_update.emit(f"{file_name}: {msg}", "orange")
+                # Final fallback: attempt elevated run without flags via Task Scheduler (Windows)
+                ok = False
+                if platform.system() == "Windows":
+                    ok, _ = self._run_via_schtasks([file_path])
+                if ok:
+                    self._send_status_update(server_ip, file_name, "Installed")
+                    self.status_update_received.emit(file_name, server_ip, "Installed")
+                else:
+                    # Installation failed despite all attempts; report failure, not manual
+                    self._send_status_update(server_ip, file_name, "Install Failed")
+                    self.status_update_received.emit(file_name, server_ip, "Install Failed")
+                    # Keep errors in status bar; no ACK spam
+                    self.status_update.emit(f"{file_name}: install failed - {msg}", "red")
         else:
             # Not an installer; mark as received successfully
             self._send_status_update(server_ip, file_name, "Received Successfully")

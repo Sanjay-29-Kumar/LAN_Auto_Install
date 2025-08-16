@@ -7,6 +7,8 @@ from ui.custom_widgets import FileTransferWidget
 import time
 import sys
 import os
+import ctypes
+import platform
 from network import protocol
 
 class ClientController:
@@ -178,6 +180,26 @@ if __name__ == "__main__":
     sys.stdout = Tee(sys.__stdout__, log_file)
     sys.stderr = Tee(sys.__stderr__, log_file)
 
+    # Elevate to Administrator on Windows if not already
+    if os.name == "nt":
+        try:
+            is_admin = ctypes.windll.shell32.IsUserAnAdmin()
+        except Exception:
+            is_admin = False
+        if not is_admin:
+            try:
+                if getattr(sys, 'frozen', False):
+                    exe = sys.executable
+                    args = " ".join([f'"{a}"' for a in sys.argv[1:]])
+                    ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, args, None, 1)
+                else:
+                    exe = sys.executable
+                    script = os.path.abspath(__file__)
+                    args = f'"{script}" ' + " ".join([f'"{a}"' for a in sys.argv[1:]])
+                    ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, args, None, 1)
+            except Exception:
+                pass
+            sys.exit(0)
     app = QApplication([])
     
     # Initialize Network Client first as it's a dependency for ClientWindow
