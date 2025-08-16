@@ -96,6 +96,8 @@ class ClientController:
         self.ui.receiving_list_widget.addItem(item)
         self.ui.receiving_list_widget.setItemWidget(item, widget)
         self.transfer_widgets[(file_name, server_ip)] = widget
+        # Wire cancel button to request cancel from server for this file
+        widget.cancel_button.clicked.connect(lambda checked=False, fn=file_name, sip=server_ip: self.handle_cancel_receive(fn, sip))
         self.ui.show_receiving() # Switch to receiving screen when a file starts to be received
 
     def update_transfer_progress(self, file_name, server_ip, percentage):
@@ -110,6 +112,15 @@ class ClientController:
         if (file_name, server_ip) in self.transfer_widgets:
             widget = self.transfer_widgets[(file_name, server_ip)]
             widget.set_status(status, "lightblue")
+
+    def handle_cancel_receive(self, file_name, server_ip):
+        # Send cancel request to server and reflect in UI
+        try:
+            self.network_client.request_cancel_receive(server_ip, file_name)
+            if (file_name, server_ip) in self.transfer_widgets:
+                self.transfer_widgets[(file_name, server_ip)].set_status("Cancel requested", "red")
+        except Exception:
+            pass
 
     def refresh_servers(self):
         self.ui.server_list_widget.clear()

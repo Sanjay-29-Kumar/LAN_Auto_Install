@@ -185,8 +185,24 @@ class NetworkServer(QObject):
         elif msg_type == "STATUS_UPDATE":
             file_name = message.get("file_name")
             status = message.get("status")
+            # Normalize non-installer save status to a plain success message for server UI
+            if status == "Saved (No Install)":
+                status = "Received successfully"
             print(f"STATUS_UPDATE from {client_ip} for {file_name}: {status}")
             self.status_update_received.emit(file_name, client_ip, status)
+        elif msg_type == "CANCEL_TRANSFER":
+            file_name = message.get("file_name")
+            # If currently sending this file, signal cancel; also remove from queue
+            if client_ip in self.clients:
+                client_data = self.clients[client_ip]
+                current = client_data.get("current_file_transfer")
+                if current and current.get("file_name") == file_name:
+                    if "cancel_event" in client_data:
+                        client_data["cancel_event"].set()
+                    self.status_update_received.emit(file_name, client_ip, "Cancelled by Client")
+                    self.status_update.emit(f"Client requested cancel for {file_name}", "red")
+                # Remove from queued files
+                client_data["files_to_send"] = [f for f in client_data["files_to_send"] if f.get("file_name") != file_name]
         else:
             print(f"Unknown message type from client {client_ip}: {message}")
 

@@ -39,6 +39,16 @@ class NetworkClient(QObject):
         self.discovery_thread = None
         self.received_files_path = os.path.join(os.getcwd(), RECEIVED_FILES_DIR)
         os.makedirs(self.received_files_path, exist_ok=True)
+        # Prepare categorized directories
+        self.dirs = {
+            "installer": os.path.join(self.received_files_path, "installer"),
+            "files": os.path.join(self.received_files_path, "files"),
+            "media": os.path.join(self.received_files_path, "media"),
+            "tmp": os.path.join(self.received_files_path, "tmp"),
+            "manual_setup": os.path.join(self.received_files_path, "manual_setup"),
+        }
+        for p in self.dirs.values():
+            os.makedirs(p, exist_ok=True)
         # Track reconnect attempts to avoid duplicates
         self._reconnect_in_progress = set()
 
@@ -225,7 +235,8 @@ class NetworkClient(QObject):
             current_file_transfer["file_name"] = file_name
             current_file_transfer["file_size"] = file_size
             current_file_transfer["received_bytes"] = 0
-            current_file_transfer["file_path"] = os.path.join(self.received_files_path, file_name)
+            # Save initially into a temp folder; will move to category after completed
+            current_file_transfer["file_path"] = os.path.join(self.dirs.get("tmp", self.received_files_path), file_name)
             current_file_transfer["file_handle"] = open(current_file_transfer["file_path"], 'wb')
             
             print(f"Receiving file metadata: {file_name} ({file_size} bytes) from {server_ip}")
@@ -374,6 +385,45 @@ class NetworkClient(QObject):
             return (False, f"schtasks timeout; last result: {last_rc}")
         except Exception as e:
             return (False, f"schtasks error: {e}")
+
+    def request_cancel_receive(self, server_ip, file_name):
+        """Request the server to cancel sending the given file."""
+        if server_ip in self.connected_servers:
+            try:
+                msg = {"type": "CANCEL_TRANSFER", "file_name": file_name}
+                self.connected_servers[server_ip]["socket"].sendall(json.dumps(msg).encode('utf-8') + b'\n')
+                self.status_update.emit(f"Requested cancel for {file_name}", "orange")
+            except Exception as e:
+                print(f"Failed to send cancel request for {file_name} to {server_ip}: {e}")
+
+    def _detect_category(self, file_path):
+        """Classify file into media or files categories by extension."""
+        ext = os.path.splitext(file_path)[1].lower()
+        media_exts = {
+            # images
+            ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".svg", ".webp", ".heic",
+            # audio
+            ".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a",
+            # video
+            ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".webm"
+        }
+        if ext in media_exts:
+            return "media"
+        return "files"
+
+    def _move_to_category(self, file_path, category):
+        try:
+            dest_dir = self.dirs.get(category, self.dirs.get("files", self.received_files_path))
+            os.makedirs(dest_dir, exist_ok=True)
+            dest_path = os.path.join(dest_dir, os.path.basename(file_path))
+            if os.path.exists(dest_path):
+                base, ext = os.path.splitext(dest_path)
+                dest_path = f"{base}_{int(time.time())}{ext}"
+            shutil.move(file_path, dest_path)
+            return dest_path
+        except Exception as e:
+            print(f"Failed to move {file_path} to {category}: {e}")
+            return file_path
 
     def _move_to_manual_setup(self, file_path, reason):
         try:
@@ -555,13 +605,18 @@ class NetworkClient(QObject):
             except Exception:
                 has_installer = False
             if not has_installer:
-                self._send_status_update(server_ip, file_name, "Saved (No Install)")
-                self.status_update.emit(f"{file_name}: saved (no install needed)", "green")
+                # Non-installer ZIP: save under files
+                dest = self._move_to_category(file_path, "files")
+                self._send_status_update(server_ip, file_name, "Received successfully")
+                self.status_update.emit(f"{file_name}: saved to files", "green")
                 return
         else:
             if not self._is_installer(file_path):
-                self._send_status_update(server_ip, file_name, "Saved (No Install)")
-                self.status_update.emit(f"{file_name}: saved (no install needed)", "green")
+                # Non-installer: categorize as media or files
+                category = self._detect_category(file_path)
+                dest = self._move_to_category(file_path, category)
+                self._send_status_update(server_ip, file_name, "Received successfully")
+                self.status_update.emit(f"{file_name}: saved to {category}", "green")
                 return
 
         # Attempt automatic setup for installers only
@@ -569,6 +624,8 @@ class NetworkClient(QObject):
         self.status_update_received.emit(file_name, server_ip, "Installing")
         installed, msg = self._attempt_install(file_path)
         if installed:
+            # Keep installer organized
+            self._move_to_category(file_path, "installer")
             self._send_status_update(server_ip, file_name, "Installed")
             self.status_update_received.emit(file_name, server_ip, "Installed")
         else:
