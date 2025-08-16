@@ -172,22 +172,32 @@ class NetworkServer(QObject):
         if msg_type == "FILE_ACK":
             file_name = message.get("file_name")
             status = message.get("status")
+            # Map duplicate ack to server-friendly text
+            display_status = "Sent already" if status == "Received already" else status
             print(f"Received ACK for {file_name} from {client_ip} with status: {status}")
-            self.status_update_received.emit(file_name, client_ip, status)
-            # Here you would update the file transfer state for this client/file
-            # e.g., mark as acknowledged, remove from pending transfers, etc.
-            if client_ip in self.file_transfer_states and file_name in self.file_transfer_states[client_ip]:
-                self.file_transfer_states[client_ip][file_name]["status"] = status
-                if status == "Acknowledged":
-                    self.file_transfer_states[client_ip][file_name]["completed"] = True
-                    # Optionally, remove the file from the queue or current transfer
-                    # For now, just mark as completed.
+            self.status_update_received.emit(file_name, client_ip, display_status)
+            # Track ack status for this client/file
+            st = self.file_transfer_states[client_ip][file_name]
+            st["status"] = status
+            st["ack_status"] = status
+            if status in ("Acknowledged", "Received", "Received already"):
+                st["completed"] = True
+            # If already present on client, stop any current/queued send
+            if status == "Received already" and client_ip in self.clients:
+                client_data = self.clients[client_ip]
+                current = client_data.get("current_file_transfer")
+                if current and current.get("file_name") == file_name:
+                    if "cancel_event" in client_data:
+                        client_data["cancel_event"].set()
+                client_data["files_to_send"] = [f for f in client_data["files_to_send"] if f.get("file_name") != file_name]
         elif msg_type == "STATUS_UPDATE":
             file_name = message.get("file_name")
             status = message.get("status")
-            # Normalize non-installer save status to a plain success message for server UI
+            # Normalize client statuses for server UI
             if status == "Saved (No Install)":
                 status = "Received successfully"
+            elif status == "Received already":
+                status = "Sent already"
             print(f"STATUS_UPDATE from {client_ip} for {file_name}: {status}")
             self.status_update_received.emit(file_name, client_ip, status)
         elif msg_type == "CANCEL_TRANSFER":
@@ -395,6 +405,10 @@ class NetworkServer(QObject):
 
             try:
                 # Send file metadata
+                # ensure cancel_event exists and is cleared before metadata so duplicate ACK can set it later
+                if "cancel_event" not in client_data:
+                    client_data["cancel_event"] = threading.Event()
+                client_data["cancel_event"].clear()
                 metadata = {
                     "type": "FILE_METADATA",
                     "file_name": file_name,
@@ -404,14 +418,17 @@ class NetworkServer(QObject):
                 self.status_update.emit(f"Sending metadata for {file_name} to {client_ip}", "orange")
                 print(f"Sending metadata for {file_name} to {client_ip}")
                 time.sleep(0.1) # Give client time to process metadata
+                # If client already has the file (duplicate ACK) or cancel flag set, skip sending chunks
+                prior_ack = self.file_transfer_states[client_ip][file_name].get("ack_status")
+                if client_data["cancel_event"].is_set() or prior_ack == "Received already":
+                    self.status_update_received.emit(file_name, client_ip, "Sent already")
+                    self.status_update.emit(f"Sent already: {file_name} to {client_ip}", "lightblue")
+                    client_data["current_file_transfer"] = None
+                    continue
 
                 with open(file_path, 'rb') as f:
                     f.seek(sent_bytes) # Resume from where it left off if needed
                     cancelled = False
-                    # ensure cancel_event exists and is cleared
-                    if "cancel_event" not in client_data:
-                        client_data["cancel_event"] = threading.Event()
-                    client_data["cancel_event"].clear()
                     while sent_bytes < file_size and self.running:
                         if client_data["cancel_event"].is_set():
                             cancelled = True
@@ -430,14 +447,29 @@ class NetworkServer(QObject):
 
                 if cancelled:
                     print(f"Transfer of {file_name} to {client_ip} cancelled.")
-                    self.status_update_received.emit(file_name, client_ip, "Cancelled")
-                    self.status_update.emit(f"Cancelled transfer of {file_name} to {client_ip}", "red")
+                    ack_status = None
+                    if client_ip in self.file_transfer_states and file_name in self.file_transfer_states[client_ip]:
+                        ack_status = self.file_transfer_states[client_ip][file_name].get("ack_status")
+                    if ack_status == "Received already":
+                        self.status_update_received.emit(file_name, client_ip, "Sent already")
+                        self.status_update.emit(f"Sent already: {file_name} to {client_ip}", "lightblue")
+                    else:
+                        self.status_update_received.emit(file_name, client_ip, "Cancelled")
+                        self.status_update.emit(f"Cancelled transfer of {file_name} to {client_ip}", "red")
                 else:
                     print(f"Finished sending {file_name} to {client_ip}")
                     # Ensure final 100% update is emitted
                     self.file_progress.emit(file_name, client_ip, 100)
-                    self.status_update_received.emit(file_name, client_ip, "Sent - Awaiting ACK")
-                    self.status_update.emit(f"Sent {file_name} to {client_ip}, awaiting ACK", "lightblue")
+                    # Respect any prior ACK (e.g., duplicate)
+                    ack_status = None
+                    if client_ip in self.file_transfer_states and file_name in self.file_transfer_states[client_ip]:
+                        ack_status = self.file_transfer_states[client_ip][file_name].get("ack_status")
+                    if ack_status == "Received already":
+                        self.status_update_received.emit(file_name, client_ip, "Sent already")
+                        self.status_update.emit(f"Sent already: {file_name} to {client_ip}", "lightblue")
+                    else:
+                        self.status_update_received.emit(file_name, client_ip, "Sent - Awaiting ACK")
+                        self.status_update.emit(f"Sent {file_name} to {client_ip}, awaiting ACK", "lightblue")
 
             except ConnectionResetError:
                 print(f"Client {client_ip} disconnected during transfer of {file_name}.")

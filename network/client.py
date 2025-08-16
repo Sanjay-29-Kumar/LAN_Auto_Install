@@ -229,6 +229,18 @@ class NetworkClient(QObject):
         elif msg_type == "FILE_METADATA":
             file_name = message.get("file_name")
             file_size = message.get("file_size")
+
+            # Duplicate check before preparing file reception
+            try:
+                fsize = int(file_size)
+            except Exception:
+                fsize = file_size
+            if self._existing_file(file_name, fsize):
+                # Inform server with ACK and skip creating UI row or temp file
+                self._send_file_ack(server_ip, file_name, "Received already")
+                self._send_status_update(server_ip, file_name, "Received already")
+                self.request_cancel_receive(server_ip, file_name)
+                return
             
             current_file_transfer.clear() # Clear any previous transfer state
             current_file_transfer["receiving_file"] = True
@@ -424,6 +436,30 @@ class NetworkClient(QObject):
         except Exception as e:
             print(f"Failed to move {file_path} to {category}: {e}")
             return file_path
+
+    def _existing_file(self, file_name, file_size):
+        """Return True if a file of same name and size already exists in categorized folders."""
+        try:
+            dirs_to_check = [
+                self.dirs.get("installer"),
+                self.dirs.get("files"),
+                self.dirs.get("media"),
+                self.dirs.get("tmp"),
+            ]
+            for d in dirs_to_check:
+                if not d:
+                    continue
+                p = os.path.join(d, file_name)
+                if os.path.exists(p):
+                    try:
+                        if os.path.getsize(p) == int(file_size):
+                            return True
+                    except Exception:
+                        if os.path.getsize(p) == file_size:
+                            return True
+        except Exception:
+            pass
+        return False
 
     def _move_to_manual_setup(self, file_path, reason):
         try:
