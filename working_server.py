@@ -13,6 +13,7 @@ class ServerController:
         self.network_server = network_server
         self.ui = ui
         self.transfer_widgets = {}
+        self.pending_transfers = set()
         self.connect_signals()
         self.network_server.start_server() # Start the server network operations
 
@@ -42,6 +43,11 @@ class ServerController:
         self.network_server.status_update.connect(self.update_status_bar) # Connect status update signal
         self.ui.global_back_home_button.clicked.connect(self.ui.show_home) # Connect global back/home button
         self.network_server.status_update.connect(self.update_status_bar) # Connect status update signal
+        # New UI actions
+        if hasattr(self.ui, 'select_all_clients_button'):
+            self.ui.select_all_clients_button.clicked.connect(self.select_all_clients)
+        if hasattr(self.ui, 'share_more_button'):
+            self.ui.share_more_button.clicked.connect(self.share_more)
 
     def update_server_ip_display(self, ip_address):
         self.ui.server_ip_label.setText(f"Server IP: {ip_address}")
@@ -143,6 +149,9 @@ class ServerController:
 
         self.ui.transfer_list_widget.clear()
         self.transfer_widgets = {}
+        self.pending_transfers = set()
+        if hasattr(self.ui, 'share_more_button'):
+            self.ui.share_more_button.setVisible(False)
 
         # Populate transfer list with all selected files for all selected clients
         for file_info in self.network_server.files_to_distribute:
@@ -153,6 +162,7 @@ class ServerController:
                 self.ui.transfer_list_widget.addItem(item)
                 self.ui.transfer_list_widget.setItemWidget(item, widget)
                 self.transfer_widgets[(file_info['name'], client_ip)] = widget
+                self.pending_transfers.add((file_info['name'], client_ip))
                 # Connect cancel button for each transfer widget
                 widget.cancel_button.clicked.connect(lambda checked, fn=file_info['name'], cip=client_ip: self.cancel_single_transfer(fn, cip))
                 # Add a checkbox to the widget for selection
@@ -173,6 +183,9 @@ class ServerController:
         if (file_name, client_ip) in self.transfer_widgets:
             widget = self.transfer_widgets[(file_name, client_ip)]
             widget.set_status(status, "lightblue")
+        if self._is_terminal_status(status):
+            self.pending_transfers.discard((file_name, client_ip))
+            self._check_all_transfers_done()
 
     def send_to_all_clients(self):
         connected_clients = self.network_server.get_connected_clients()
@@ -188,6 +201,9 @@ class ServerController:
 
         self.ui.transfer_list_widget.clear()
         self.transfer_widgets = {}
+        self.pending_transfers = set()
+        if hasattr(self.ui, 'share_more_button'):
+            self.ui.share_more_button.setVisible(False)
 
         for file_info in self.network_server.files_to_distribute:
             for client_ip in selected_clients_ips:
@@ -197,6 +213,7 @@ class ServerController:
                 self.ui.transfer_list_widget.addItem(item)
                 self.ui.transfer_list_widget.setItemWidget(item, widget)
                 self.transfer_widgets[(file_info['name'], client_ip)] = widget
+                self.pending_transfers.add((file_info['name'], client_ip))
                 widget.cancel_button.clicked.connect(lambda checked, fn=file_info['name'], cip=client_ip: self.cancel_single_transfer(fn, cip))
                 # Add a checkbox to the widget for selection
                 widget.add_checkbox()
@@ -244,6 +261,39 @@ class ServerController:
                 widget = self.transfer_widgets[(file_name, client_ip)]
                 widget.set_status("Cancelled by Server", "red")
                 widget.set_progress(0)
+
+    def select_all_clients(self):
+        for i in range(self.ui.client_list_widget.count()):
+            item = self.ui.client_list_widget.item(i)
+            item.setCheckState(Qt.Checked)
+
+    def _is_terminal_status(self, status: str) -> bool:
+        if not status:
+            return False
+        s = status.lower()
+        terminal_keywords = [
+            "received successfully",
+            "received",
+            "installed",
+            "manual setup required",
+            "cancelled",
+            "not sent",
+            "not received",
+        ]
+        return any(k in s for k in terminal_keywords)
+
+    def _check_all_transfers_done(self):
+        if not self.pending_transfers:
+            self.network_server.files_to_distribute.clear()
+            self.update_selected_files_list()
+            if hasattr(self.ui, 'share_more_button'):
+                self.ui.share_more_button.setVisible(True)
+            self.update_status_bar("All transfers completed. Share more files?", "green")
+
+    def share_more(self):
+        if hasattr(self.ui, 'share_more_button'):
+            self.ui.share_more_button.setVisible(False)
+        self.select_files()
 
 if __name__ == "__main__":
     app = QApplication([])

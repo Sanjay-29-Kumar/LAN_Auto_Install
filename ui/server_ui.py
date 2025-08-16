@@ -93,6 +93,9 @@ class ServerWindow(QMainWindow):
 
         self.refresh_clients_button = QPushButton("Refresh Client List")
         client_list_layout.addWidget(self.refresh_clients_button)
+        # Convenience: select all connected clients
+        self.select_all_clients_button = QPushButton("Select All Clients")
+        client_list_layout.addWidget(self.select_all_clients_button)
         layout.addWidget(client_list_group)
 
         # File selection
@@ -151,6 +154,11 @@ class ServerWindow(QMainWindow):
         button_layout.addWidget(self.cancel_all_button)
         button_layout.addWidget(self.cancel_selected_button)
         layout.addLayout(button_layout)
+
+        # Prompt to share more once all transfers complete
+        self.share_more_button = QPushButton("Share More")
+        self.share_more_button.setVisible(False)
+        layout.addWidget(self.share_more_button)
 
         return widget
 
