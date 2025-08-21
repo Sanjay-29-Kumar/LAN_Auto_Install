@@ -16,11 +16,14 @@ class ClientController:
         self.network_client = network_client
         self.ui = ui
         self.transfer_widgets = {}
-        self.connect_signals()
+        self.load_user_preferences()
         self.network_client.status_update.connect(self.ui.update_status_bar)
         self.network_client.start_client() # Start the client network operations
 
-    def connect_signals(self):
+    def load_user_preferences(self):
+        # Load user preferences
+        if hasattr(self.ui, 'load_preferences'):
+            self.ui.load_preferences()
         # Connect network signals to UI slots
         self.network_client.server_found.connect(self.update_server_list)
         self.network_client.connection_status.connect(self.update_connection_status)
@@ -31,6 +34,10 @@ class ClientController:
 
         # Connect UI signals to controller slots
         self.ui.refresh_servers_button.clicked.connect(self.refresh_servers)
+        # Automatically connect to preferred servers on discovery
+        for server_info in self.network_client.servers.values():
+            if server_info['ip'] in self.ui.preferred_servers:
+                self.network_client._connect_to_server(server_info['ip'], server_info['port'])
         self.ui.connect_to_selected_button.clicked.connect(self.connect_to_selected)
         self.ui.open_folder_button.clicked.connect(self.open_received_folder)
         self.ui.clear_list_button.clicked.connect(self.clear_received_list)

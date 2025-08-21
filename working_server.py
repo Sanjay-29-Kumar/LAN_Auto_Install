@@ -14,16 +14,23 @@ class ServerController:
         self.ui = ui
         self.transfer_widgets = {}
         self.pending_transfers = set()
-        self.connect_signals()
+        self.load_user_preferences()
         self.network_server.start_server() # Start the server network operations
 
-    def connect_signals(self):
+    def load_user_preferences(self):
+        # Load user preferences
+        if hasattr(self.ui, 'load_preferences'):
+            self.ui.load_preferences()
         # Connect network signals to UI slots
         self.network_server.client_connected.connect(self.update_client_list)
         self.network_server.client_disconnected.connect(self.update_client_list)
 
         # Connect UI signals to controller slots
         self.ui.select_files_button.clicked.connect(self.select_files)
+        # Automatically connect to previously preferred clients
+        for client_info in self.network_server.get_connected_clients():
+            if client_info['ip'] in self.ui.preferred_clients:
+                self.network_server.connect_to_client_manual(client_info['ip'])
         self.ui.send_files_button.clicked.connect(self.send_files)
         self.ui.global_back_home_button.clicked.connect(self.ui.show_home)
         self.ui.refresh_clients_button.clicked.connect(self.update_client_list)
