@@ -41,7 +41,28 @@ class ClientController:
         self.ui.connect_to_selected_button.clicked.connect(self.connect_to_selected)
         self.ui.open_folder_button.clicked.connect(self.open_received_folder)
         self.ui.clear_list_button.clicked.connect(self.clear_received_list)
-        self.ui.server_list_widget.itemClicked.connect(self.show_server_profile)
+        # self.ui.server_list_widget.itemClicked.connect(self.show_server_profile)
+        self.ui.show_profile_button.clicked.connect(self.show_selected_server_profile)
+
+    def show_selected_server_profile(self):
+        selected_ip = None
+        for i in range(self.ui.server_list_widget.count()):
+            item = self.ui.server_list_widget.item(i)
+            if item.checkState() == Qt.Checked:
+                selected_ip = item.text().split('(')[1].split(')')[0]
+                break
+
+        if not selected_ip:
+            QMessageBox.information(self.ui, "Server Profile", "Select a device (checked) first.")
+            return
+
+        server_info = self.network_client.servers.get(selected_ip)
+        if not server_info:
+            QMessageBox.information(self.ui, "Server Profile", "Details not available.")
+            return
+
+        profile_text = f"Server Profile\nHostname: {server_info.get('hostname','N/A')}\nIP: {server_info.get('ip','N/A')}\nLast Seen: {time.ctime(server_info.get('last_seen',0))}"
+        QMessageBox.information(self.ui, "Server Profile", profile_text)
         self.ui.manual_connect_button.clicked.connect(self.connect_manual)
         self.ui.global_back_home_button.clicked.connect(self.ui.show_home) # Connect global back/home button
         self.ui.connect_to_all_button.clicked.connect(self.connect_to_all) # Connect connect to all button

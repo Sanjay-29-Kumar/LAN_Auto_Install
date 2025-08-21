@@ -40,7 +40,24 @@ class ServerController:
         self.ui.send_to_all_button.clicked.connect(self.send_to_all_clients)
         self.network_server.file_progress.connect(self.update_transfer_progress)
         self.network_server.status_update_received.connect(self.update_transfer_status)
-        self.ui.client_list_widget.itemClicked.connect(self.show_client_profile)
+        # self.ui.client_list_widget.itemClicked.connect(self.show_client_profile)
+        self.ui.show_profile_button.clicked.connect(self.show_selected_client_profile)
+
+    def show_selected_client_profile(self):
+        selected_ip = None
+        for i in range(self.ui.client_list_widget.count()):
+            item = self.ui.client_list_widget.item(i)
+            if item.checkState() == Qt.Checked:
+                selected_ip = item.text().split('(')[1].replace(')', '')
+                break
+
+        if not selected_ip or selected_ip not in self.network_server.clients:
+            QMessageBox.information(self.ui, "Client Profile", "Select a client (checked) first.")
+            return
+
+        info = self.network_server.clients[selected_ip]["info"]
+        profile_text = f"Client Profile\nHostname: {info.get('hostname','N/A')}\nIP: {info.get('ip','N/A')}"
+        QMessageBox.information(self.ui, "Client Profile", profile_text)
         self.ui.manual_ip_connect_button.clicked.connect(self.connect_to_manual_ip)
         self.ui.show_server_details_button.clicked.connect(self.show_server_details)
         self.network_server.server_ip_updated.connect(self.update_server_ip_display)

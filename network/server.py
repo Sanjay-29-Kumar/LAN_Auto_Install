@@ -354,8 +354,12 @@ class NetworkServer(QObject):
             except OSError as e:
                 print(f"Error closing socket for {client_ip}: {e}")
             del self.clients[client_ip]
-            self.client_disconnected.emit(client_ip)
-            self.status_update.emit(f"Client {client_ip} disconnected", "red")
+            try:
+                self.client_disconnected.emit(client_ip)
+                self.status_update.emit(f"Client {client_ip} disconnected", "red")
+            except RuntimeError:
+                # QObject may already be deleted during shutdown
+                pass
             print(f"Disconnected client {client_ip}.")
 
     def send_file(self, client_ip, file_path):

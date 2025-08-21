@@ -180,8 +180,10 @@ class ServerWindow(QMainWindow):
         self.refresh_clients_button = QPushButton("Refresh Client List")
         self.refresh_clients_button.setObjectName("secondaryButton")
         self.select_all_clients_button = QPushButton("Select All Clients")
+        self.show_profile_button = QPushButton("Show Profile")
         actions_row.addWidget(self.refresh_clients_button)
         actions_row.addStretch(1)
+        actions_row.addWidget(self.show_profile_button)
         actions_row.addWidget(self.select_all_clients_button)
 
         clients_group.layout().addLayout(clients_vbox)
