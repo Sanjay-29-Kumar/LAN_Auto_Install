@@ -1,9 +1,9 @@
 from ui.server_ui import ServerWindow
 from PyQt5.QtWidgets import QApplication, QMainWindow, QMessageBox, QFileDialog, QListWidgetItem
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QSize
 from PyQt5.QtGui import QColor
 from network.server import NetworkServer
-from ui.custom_widgets import FileTransferWidget
+from ui.custom_widgets import FileTransferWidget, ProfileListItemWidget
 import os
 import time
 from network import protocol
@@ -123,16 +123,31 @@ class ServerController:
         connected_clients = self.network_server.get_connected_clients()
         for client in connected_clients:
             hostname = client.get('hostname', '') or 'Unknown'
-            if len(hostname) > 26:
-                hostname = hostname[:26] + '…'
-            label = f"{hostname} ({client['ip']})"
-            item = QListWidgetItem(label)
-            item.setTextAlignment(Qt.AlignHCenter)
-            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Unchecked)
+            ip = client.get('ip', '')
+            label = f"{hostname}  |  {ip}"
+            item = QListWidgetItem()
+            item.setSizeHint(QSize(260, 40))
+            widget = ProfileListItemWidget(label, show_checkbox=True)
+            widget.set_checked(False)
+            widget.client_info = client
+            def show_profile(info=client):
+                self.show_client_profile_by_info(info)
+            widget.profile_button.clicked.connect(show_profile)
             self.ui.client_list_widget.addItem(item)
+            self.ui.client_list_widget.setItemWidget(item, widget)
         self.ui.connected_clients_label.setText(str(len(connected_clients)))
         self.ui.connection_status_label.setText("Connected" if connected_clients else "Not Connected")
+
+    def show_client_profile_by_ip(self, ip):
+        client_info = self.network_server.clients.get(ip, {}).get('info')
+        self.show_client_profile_by_info(client_info)
+
+    def show_client_profile_by_info(self, client_info):
+        if not client_info:
+            QMessageBox.information(self.ui, "Client Profile", "Details not available.")
+            return
+        profile_text = f"Client Profile\nHostname: {client_info.get('hostname','N/A')}\nIP: {client_info.get('ip','N/A')}"
+        QMessageBox.information(self.ui, "Client Profile", profile_text)
 
     def select_files(self):
         file_paths, _ = QFileDialog.getOpenFileNames(self.ui, "Select Files to Share")

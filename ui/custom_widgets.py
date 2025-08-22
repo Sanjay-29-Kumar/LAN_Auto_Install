@@ -1,3 +1,39 @@
+from PyQt5.QtWidgets import QWidget
+class ProfileListItemWidget(QWidget):
+    """
+    Custom widget for device list items with a label, checkbox, and a profile button.
+    """
+    def __init__(self, label_text, show_checkbox=True, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 2, 8, 2)
+        layout.setSpacing(8)
+        self.checkbox = QCheckBox()
+        self.checkbox.setVisible(show_checkbox)
+        self.label = QLabel()
+        self.label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        # Use HTML for better formatting: name bold, IP smaller
+        if '|' in label_text:
+            parts = label_text.split('|')
+            name = parts[0].strip()
+            ip = parts[1].strip()
+            self.label.setText(f'<b>{name}</b><br><span style="font-size:10pt;color:#aaa;">{ip}</span>')
+        else:
+            self.label.setText(label_text)
+        self.profile_button = QPushButton()
+        self.profile_button.setIcon(self.style().standardIcon(QStyle.SP_FileDialogInfoView))
+        self.profile_button.setToolTip("Show Profile")
+        self.profile_button.setFixedSize(28, 28)
+        layout.addWidget(self.checkbox, 0)
+        layout.addWidget(self.label, 1)
+        layout.addWidget(self.profile_button, 0)
+        self.setLayout(layout)
+
+    def is_checked(self):
+        return self.checkbox.isChecked()
+
+    def set_checked(self, checked):
+        self.checkbox.setChecked(checked)
 """
 Custom widgets for the LAN Auto Install application.
 """

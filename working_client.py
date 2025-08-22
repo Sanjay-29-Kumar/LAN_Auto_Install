@@ -1,9 +1,9 @@
 from ui.client_ui import ClientWindow
 from PyQt5.QtWidgets import QApplication, QMainWindow, QMessageBox, QListWidgetItem
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QSize
 from PyQt5.QtGui import QColor
 from network.client import NetworkClient
-from ui.custom_widgets import FileTransferWidget
+from ui.custom_widgets import FileTransferWidget, ProfileListItemWidget
 import time
 import sys
 import os
@@ -83,28 +83,36 @@ class ClientController:
     def update_server_list(self, server_info):
         # Avoid duplicates
         for i in range(self.ui.server_list_widget.count()):
-            item = self.ui.server_list_widget.item(i)
-            if server_info['ip'] in item.text():
+            widget = self.ui.server_list_widget.itemWidget(self.ui.server_list_widget.item(i))
+            if widget and hasattr(widget, 'label') and server_info['ip'] in widget.label.text():
                 return
-        
+
         hostname = server_info.get('hostname', '') or 'Unknown'
-        # Truncate long hostnames for single-line fit
         if len(hostname) > 26:
-            hostname = hostname[:26] + '…'
-        label = f"{hostname} ({server_info['ip']})"
-        item = QListWidgetItem(label)
-        item.setTextAlignment(Qt.AlignHCenter)
-        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-        if server_info['ip'] == self.network_client.local_ip:
-            item.setCheckState(Qt.Checked)
-        else:
-            item.setCheckState(Qt.Unchecked)
+            hostname = hostname[:26] + '6'
+        ip = server_info.get('ip', '')
+        label = f"{hostname}  |  {ip}"
+        item = QListWidgetItem()
+        item.setSizeHint(QSize(200, 40))
+        widget = ProfileListItemWidget(label)
+        def show_profile():
+            self.show_server_profile_by_ip(server_info['ip'])
+        widget.profile_button.clicked.connect(show_profile)
         self.ui.server_list_widget.addItem(item)
+        self.ui.server_list_widget.setItemWidget(item, widget)
         # Auto-connect to each discovered server
         try:
             self.network_client._connect_to_server(server_info['ip'], server_info['port'])
         except Exception as e:
             print(f"Auto-connect error: {e}")
+
+    def show_server_profile_by_ip(self, ip):
+        server_info = self.network_client.servers.get(ip)
+        if not server_info:
+            QMessageBox.information(self.ui, "Server Profile", "Details not available.")
+            return
+        profile_text = f"Server Profile\nHostname: {server_info.get('hostname','N/A')}\nIP: {server_info.get('ip','N/A')}\nLast Seen: {time.ctime(server_info.get('last_seen',0))}"
+        QMessageBox.information(self.ui, "Server Profile", profile_text)
 
     def update_connection_status(self, server_ip, connected):
         self.ui.connection_status_label.setText(f"Connected to {server_ip}" if connected else f"Disconnected from {server_ip}")
