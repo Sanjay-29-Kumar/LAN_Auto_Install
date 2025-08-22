@@ -88,12 +88,10 @@ class ClientController:
                 return
 
         hostname = server_info.get('hostname', '') or 'Unknown'
-        if len(hostname) > 26:
-            hostname = hostname[:26] + '6'
         ip = server_info.get('ip', '')
         label = f"{hostname}  |  {ip}"
         item = QListWidgetItem()
-        item.setSizeHint(QSize(320, 56))
+        item.setSizeHint(QSize(400, 56))
         widget = ProfileListItemWidget(label, show_checkbox=True)
         widget.set_checked(server_info['ip'] == self.network_client.local_ip)
         widget.server_info = server_info
