@@ -33,6 +33,12 @@ class PillLabel(QLabel):
 
 
 class ClientWindow(QMainWindow):
+    def show_client_details_dialog(self):
+        # Show a dialog with full hostname and IP
+        hostname = self.client_name_label.text()
+        ip = self.client_ip_label.text()
+        msg = f"<b>Client Details</b><br><b>Hostname:</b> {hostname}<br><b>IP Address:</b> {ip}"
+        QMessageBox.information(self, "Client Details", msg)
     # Signal to notify when Details button is clicked
     show_client_details_requested = pyqtSignal()
     def __init__(self, network_client):
@@ -109,6 +115,7 @@ class ClientWindow(QMainWindow):
         return group
 
 
+
     def create_home_widget(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
@@ -126,6 +133,11 @@ class ClientWindow(QMainWindow):
         self.client_ip_label = QLabel(self.network_client.local_ip)
         self.client_name_label.setObjectName("muted")
         self.client_ip_label.setObjectName("muted")
+        # Set elide mode and tooltip for full text
+        self.client_name_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.client_ip_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.client_name_label.setToolTip(self.client_name_label.text())
+        self.client_ip_label.setToolTip(self.client_ip_label.text())
         client_form.addRow("Name:", self.client_name_label)
         # Add Details button next to IP
         ip_row = QHBoxLayout()
@@ -209,7 +221,7 @@ class ClientWindow(QMainWindow):
         return widget
 
     def on_show_client_details_clicked(self):
-        self.show_client_details_requested.emit()
+        self.show_client_details_dialog()
 
     def _refresh_servers_clicked(self):
         print("Refresh Servers button clicked!")
