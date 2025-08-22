@@ -8,11 +8,32 @@ LocalSend-inspired server UI for the LAN Auto Install application.
 import sys
 import os
 import socket
+
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5.QtGui import *
 from .custom_widgets import FileTransferWidget
 from string import Template
+
+def get_local_ip():
+    # Returns the best local IP address for display
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        if ip and not ip.startswith("127."):
+            return ip
+    except Exception:
+        pass
+    try:
+        ip = socket.gethostbyname(socket.gethostname())
+        if ip and not ip.startswith("127."):
+            return ip
+    except Exception:
+        pass
+    return "127.0.0.1"
 
 PRIMARY = "#3b82f6"   # blue-500
 ACCENT = "#22c55e"    # green-500
@@ -33,6 +54,26 @@ class PillLabel(QLabel):
 
 
 class ServerWindow(QMainWindow):
+    @staticmethod
+    def _get_local_ip():
+        # Returns the best local IP address for display
+        import socket
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            if ip and not ip.startswith("127."):
+                return ip
+        except Exception:
+            pass
+        try:
+            ip = socket.gethostbyname(socket.gethostname())
+            if ip and not ip.startswith("127."):
+                return ip
+        except Exception:
+            pass
+        return "127.0.0.1"
     # Signal to notify when Details button is clicked
     show_server_details_requested = pyqtSignal()
     def __init__(self):
@@ -131,7 +172,7 @@ class ServerWindow(QMainWindow):
         server_form = QFormLayout()
         server_form.setLabelAlignment(Qt.AlignRight)
         self.server_name_label = QLabel(socket.gethostname())
-        self.server_ip_label = QLabel("Fetching IP...")
+        self.server_ip_label = QLabel(get_local_ip())
         self.server_name_label.setObjectName("muted")
         self.server_ip_label.setObjectName("muted")
 

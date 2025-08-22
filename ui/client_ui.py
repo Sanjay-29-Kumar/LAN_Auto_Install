@@ -33,6 +33,8 @@ class PillLabel(QLabel):
 
 
 class ClientWindow(QMainWindow):
+    # Signal to notify when Details button is clicked
+    show_client_details_requested = pyqtSignal()
     def __init__(self, network_client):
         super().__init__()
         self.network_client = network_client
@@ -106,6 +108,7 @@ class ClientWindow(QMainWindow):
         layout.setSpacing(12)
         return group
 
+
     def create_home_widget(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
@@ -124,7 +127,17 @@ class ClientWindow(QMainWindow):
         self.client_name_label.setObjectName("muted")
         self.client_ip_label.setObjectName("muted")
         client_form.addRow("Name:", self.client_name_label)
-        client_form.addRow("IP:", self.client_ip_label)
+        # Add Details button next to IP
+        ip_row = QHBoxLayout()
+        ip_row.setSpacing(8)
+        ip_row.addWidget(self.client_ip_label)
+        self.show_client_details_button = QPushButton("Details")
+        self.show_client_details_button.setFixedHeight(28)
+        self.show_client_details_button.setObjectName("secondaryButton")
+        self.show_client_details_button.clicked.connect(self.on_show_client_details_clicked)
+        ip_row.addWidget(self.show_client_details_button)
+        client_form.addRow("IP:", ip_row)
+
         client_info_group.layout().addLayout(client_form)
         top_row.addWidget(client_info_group, 1)
 
@@ -194,6 +207,9 @@ class ClientWindow(QMainWindow):
         layout.addWidget(manual_group, 1)
 
         return widget
+
+    def on_show_client_details_clicked(self):
+        self.show_client_details_requested.emit()
 
     def _refresh_servers_clicked(self):
         print("Refresh Servers button clicked!")
