@@ -42,6 +42,10 @@ class ServerController:
         self.network_server.status_update_received.connect(self.update_transfer_status)
         # self.ui.client_list_widget.itemClicked.connect(self.show_client_profile)
         self.ui.show_profile_button.clicked.connect(self.show_selected_client_profile)
+        self.ui.cancel_all_button.clicked.connect(self.cancel_all_transfers)
+        self.ui.cancel_selected_button.clicked.connect(self.cancel_selected_transfers)
+        if hasattr(self.ui, 'share_more_button'):
+            self.ui.share_more_button.clicked.connect(self.share_more)
 
     def show_selected_client_profile(self):
         selected_ip = None
@@ -61,8 +65,6 @@ class ServerController:
         self.ui.manual_ip_connect_button.clicked.connect(self.connect_to_manual_ip)
         self.ui.show_server_details_button.clicked.connect(self.show_server_details)
         self.network_server.server_ip_updated.connect(self.update_server_ip_display)
-        self.ui.cancel_all_button.clicked.connect(self.cancel_all_transfers)
-        self.ui.cancel_selected_button.clicked.connect(self.cancel_selected_transfers)
         self.ui.global_back_home_button.clicked.connect(self.ui.show_home) # Connect global back/home button
         self.network_server.status_update.connect(self.update_status_bar) # Connect status update signal
         self.ui.global_back_home_button.clicked.connect(self.ui.show_home) # Connect global back/home button
@@ -70,8 +72,6 @@ class ServerController:
         # New UI actions
         if hasattr(self.ui, 'select_all_clients_button'):
             self.ui.select_all_clients_button.clicked.connect(self.select_all_clients)
-        if hasattr(self.ui, 'share_more_button'):
-            self.ui.share_more_button.clicked.connect(self.share_more)
 
     def update_server_ip_display(self, ip_address):
         self.ui.server_ip_label.setText(f"Server IP: {ip_address}")
@@ -290,10 +290,15 @@ class ServerController:
 
         self.network_server.cancel_selected_transfers(transfers_to_cancel)
         for file_name, client_ip in transfers_to_cancel:
-            if (file_name, client_ip) in self.transfer_widgets:
-                widget = self.transfer_widgets[(file_name, client_ip)]
-                widget.set_status("Cancelled by Server", "red")
-                widget.set_progress(0)
+            self.network_server.cancel_file_transfer(client_ip, file_name)
+            # Remove the widget row from UI on cancel
+            for i in range(self.ui.transfer_list_widget.count()):
+                item = self.ui.transfer_list_widget.item(i)
+                widget = self.ui.transfer_list_widget.itemWidget(item)
+                if widget and widget.file_name == file_name and widget.client_ip == client_ip:
+                    self.ui.transfer_list_widget.takeItem(i)
+                    break
+            self.transfer_widgets.pop((file_name, client_ip), None)
 
     def select_all_clients(self):
         for i in range(self.ui.client_list_widget.count()):
@@ -317,7 +322,7 @@ class ServerController:
 
     def _check_all_transfers_done(self):
         if not self.pending_transfers:
-            self.network_server.files_to_distribute.clear()
+            # self.network_server.files_to_distribute.clear() # Do not clear, allow adding more files
             self.update_selected_files_list()
             if hasattr(self.ui, 'share_more_button'):
                 self.ui.share_more_button.setVisible(True)

@@ -163,9 +163,13 @@ class ClientWindow(QMainWindow):
         actions.setSpacing(8)
         self.refresh_servers_button = QPushButton("Refresh")
         self.refresh_servers_button.setObjectName("secondaryButton")
+        self.refresh_servers_button.clicked.connect(self._refresh_servers_clicked)
         self.connect_to_selected_button = QPushButton("Connect to Selected")
+        self.connect_to_selected_button.clicked.connect(self._connect_to_selected_clicked)
         self.connect_to_all_button = QPushButton("Connect to All")
+        self.connect_to_all_button.clicked.connect(self._connect_to_all_clicked)
         self.show_profile_button = QPushButton("Show Profile")
+        self.show_profile_button.clicked.connect(self._show_client_profile_clicked)
         actions.addWidget(self.refresh_servers_button)
         actions.addStretch(1)
         actions.addWidget(self.show_profile_button)
@@ -180,6 +184,7 @@ class ClientWindow(QMainWindow):
         self.manual_ip_input = QLineEdit()
         self.manual_ip_input.setPlaceholderText("Enter server IP")
         self.manual_connect_button = QPushButton("Connect")
+        self.manual_connect_button.clicked.connect(self._manual_connect_clicked)
         manual_hbox.addWidget(self.manual_ip_input, 3)
         manual_hbox.addWidget(self.manual_connect_button, 1)
         manual_group.layout().addLayout(manual_hbox)
@@ -189,6 +194,21 @@ class ClientWindow(QMainWindow):
         layout.addWidget(manual_group, 1)
 
         return widget
+
+    def _refresh_servers_clicked(self):
+        print("Refresh Servers button clicked!")
+
+    def _connect_to_selected_clicked(self):
+        print("Connect to Selected button clicked!")
+
+    def _connect_to_all_clicked(self):
+        print("Connect to All button clicked!")
+
+    def _show_client_profile_clicked(self):
+        print("Show Client Profile button clicked!")
+
+    def _manual_connect_clicked(self):
+        print("Manual Connect button clicked!")
 
     def create_receiving_widget(self):
         widget = QWidget()
@@ -210,7 +230,9 @@ class ClientWindow(QMainWindow):
         receiving_actions.setSpacing(8)
         self.open_folder_button = QPushButton("Open Folder")
         self.open_folder_button.setObjectName("secondaryButton")
+        self.open_folder_button.clicked.connect(self._open_folder_clicked)
         self.clear_list_button = QPushButton("Clear List")
+        self.clear_list_button.clicked.connect(self._clear_list_clicked)
         receiving_actions.addWidget(self.open_folder_button)
         receiving_actions.addStretch(1)
         receiving_actions.addWidget(self.clear_list_button)
@@ -220,6 +242,12 @@ class ClientWindow(QMainWindow):
         layout.addWidget(receiving_group)
 
         return widget
+
+    def _open_folder_clicked(self):
+        print("Open Folder button clicked!")
+
+    def _clear_list_clicked(self):
+        print("Clear List button clicked!")
 
     def create_status_bar(self):
         self.statusBar = QStatusBar()

@@ -172,6 +172,7 @@ class ServerWindow(QMainWindow):
         self.manual_ip_input = QLineEdit()
         self.manual_ip_input.setPlaceholderText("Enter client IP to connect manually")
         self.manual_ip_connect_button = QPushButton("Connect")
+        self.manual_ip_connect_button.clicked.connect(self._manual_ip_connect_clicked)
         manual_row.addWidget(self.manual_ip_input, 3)
         manual_row.addWidget(self.manual_ip_connect_button, 1)
 
@@ -180,6 +181,7 @@ class ServerWindow(QMainWindow):
         self.refresh_clients_button = QPushButton("Refresh Client List")
         self.refresh_clients_button.setObjectName("secondaryButton")
         self.select_all_clients_button = QPushButton("Select All Clients")
+        self.select_all_clients_button.clicked.connect(self._select_all_clients_clicked)
         self.show_profile_button = QPushButton("Show Profile")
         actions_row.addWidget(self.refresh_clients_button)
         actions_row.addStretch(1)
@@ -195,6 +197,7 @@ class ServerWindow(QMainWindow):
         file_group = self.create_card_group("File Selection")
         file_row = QHBoxLayout()
         self.select_files_button = QPushButton("Select Files to Share")
+        self.select_files_button.clicked.connect(self._select_files_clicked)
         file_row.addStretch(1)
         file_row.addWidget(self.select_files_button)
         file_row.addStretch(1)
@@ -202,6 +205,16 @@ class ServerWindow(QMainWindow):
         layout.addWidget(file_group, 2)
 
         return widget
+
+    def _manual_ip_connect_clicked(self):
+        print("Manual IP Connect button clicked!")
+
+    def _select_all_clients_clicked(self):
+        print("Select All Clients button clicked!")
+
+    def _select_files_clicked(self):
+        print("Select Files to Share button clicked!")
+        self.show_after_selection()
 
     def create_after_selection_widget(self):
         widget = QWidget()
@@ -219,10 +232,15 @@ class ServerWindow(QMainWindow):
         # Actions
         actions = QHBoxLayout()
         self.add_more_files_button = QPushButton("Add More Files")
+        self.add_more_files_button.clicked.connect(self._add_more_files_clicked)
         self.remove_selected_files_button = QPushButton("Remove Selected")
+        self.remove_selected_files_button.clicked.connect(self._remove_selected_files_clicked)
         self.select_all_files_button = QPushButton("Select All")
+        self.select_all_files_button.clicked.connect(self._select_all_files_clicked)
         self.send_files_button = QPushButton("Send to Selected Clients")
+        self.send_files_button.clicked.connect(self._send_files_clicked)
         self.send_to_all_button = QPushButton("Send to All Clients")
+        self.send_to_all_button.clicked.connect(self._send_to_all_clicked)
         actions.addWidget(self.add_more_files_button)
         actions.addWidget(self.remove_selected_files_button)
         actions.addStretch(1)
@@ -235,6 +253,23 @@ class ServerWindow(QMainWindow):
         layout.addWidget(selected_group)
 
         return widget
+
+    def _add_more_files_clicked(self):
+        print("Add More Files button clicked!")
+
+    def _remove_selected_files_clicked(self):
+        print("Remove Selected Files button clicked!")
+
+    def _select_all_files_clicked(self):
+        print("Select All Files button clicked!")
+
+    def _send_files_clicked(self):
+        print("Send to Selected Clients button clicked!")
+        self.show_while_sharing()
+
+    def _send_to_all_clicked(self):
+        print("Send to All Clients button clicked!")
+        self.show_while_sharing()
 
     def create_while_sharing_widget(self):
         widget = QWidget()
