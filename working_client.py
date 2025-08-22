@@ -93,10 +93,12 @@ class ClientController:
         ip = server_info.get('ip', '')
         label = f"{hostname}  |  {ip}"
         item = QListWidgetItem()
-        item.setSizeHint(QSize(200, 40))
-        widget = ProfileListItemWidget(label)
+        item.setSizeHint(QSize(320, 56))
+        widget = ProfileListItemWidget(label, show_checkbox=True)
+        widget.set_checked(server_info['ip'] == self.network_client.local_ip)
+        widget.server_info = server_info
         def show_profile():
-            self.show_server_profile_by_ip(server_info['ip'])
+            self.show_server_profile_by_info(widget.server_info)
         widget.profile_button.clicked.connect(show_profile)
         self.ui.server_list_widget.addItem(item)
         self.ui.server_list_widget.setItemWidget(item, widget)
@@ -108,6 +110,9 @@ class ClientController:
 
     def show_server_profile_by_ip(self, ip):
         server_info = self.network_client.servers.get(ip)
+        self.show_server_profile_by_info(server_info)
+
+    def show_server_profile_by_info(self, server_info):
         if not server_info:
             QMessageBox.information(self.ui, "Server Profile", "Details not available.")
             return

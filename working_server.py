@@ -126,7 +126,7 @@ class ServerController:
             ip = client.get('ip', '')
             label = f"{hostname}  |  {ip}"
             item = QListWidgetItem()
-            item.setSizeHint(QSize(260, 40))
+            item.setSizeHint(QSize(320, 56))
             widget = ProfileListItemWidget(label, show_checkbox=True)
             widget.set_checked(False)
             widget.client_info = client

@@ -12,18 +12,20 @@ class ProfileListItemWidget(QWidget):
         self.checkbox.setVisible(show_checkbox)
         self.label = QLabel()
         self.label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.label.setStyleSheet("font-size: 13pt; padding: 2px 8px 2px 0px;")
         # Use HTML for better formatting: name bold, IP smaller
         if '|' in label_text:
             parts = label_text.split('|')
             name = parts[0].strip()
             ip = parts[1].strip()
-            self.label.setText(f'<b>{name}</b><br><span style="font-size:10pt;color:#aaa;">{ip}</span>')
+            self.label.setText(f'<b style="font-size:14pt;">{name}</b><br><span style="font-size:11pt;color:#aaa;">{ip}</span>')
         else:
             self.label.setText(label_text)
         self.profile_button = QPushButton()
         self.profile_button.setIcon(self.style().standardIcon(QStyle.SP_FileDialogInfoView))
         self.profile_button.setToolTip("Show Profile")
-        self.profile_button.setFixedSize(28, 28)
+        self.profile_button.setFixedSize(36, 36)
+        self.profile_button.setStyleSheet("background:#2a2a40; border-radius:18px; padding:2px;")
         layout.addWidget(self.checkbox, 0)
         layout.addWidget(self.label, 1)
         layout.addWidget(self.profile_button, 0)
