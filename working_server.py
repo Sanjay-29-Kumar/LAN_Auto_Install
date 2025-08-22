@@ -46,6 +46,9 @@ class ServerController:
         self.ui.cancel_selected_button.clicked.connect(self.cancel_selected_transfers)
         if hasattr(self.ui, 'share_more_button'):
             self.ui.share_more_button.clicked.connect(self.share_more)
+        # Connect Details button signal
+        if hasattr(self.ui, 'show_server_details_requested'):
+            self.ui.show_server_details_requested.connect(self.show_server_details)
 
     def show_selected_client_profile(self):
         selected_ip = None

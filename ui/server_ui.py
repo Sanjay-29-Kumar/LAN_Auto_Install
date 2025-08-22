@@ -33,6 +33,8 @@ class PillLabel(QLabel):
 
 
 class ServerWindow(QMainWindow):
+    # Signal to notify when Details button is clicked
+    show_server_details_requested = pyqtSignal()
     def __init__(self):
         super().__init__()
         self.setWindowTitle("LAN Auto Install - Server")
@@ -84,6 +86,10 @@ class ServerWindow(QMainWindow):
         self.global_back_home_button.clicked.connect(self.show_home)
         appbar_layout.addWidget(self.global_back_home_button)
 
+    # Connect Details button to slot
+    # (Details button is created in create_home_widget)
+    # Will connect after widget is created
+
         # Main container: app bar + pages
         main_container_widget = QWidget()
         main_container_layout = QVBoxLayout(main_container_widget)
@@ -95,6 +101,13 @@ class ServerWindow(QMainWindow):
 
         self.create_status_bar()
         self.apply_theme()
+
+        # Connect Details button to slot after widget creation
+        if hasattr(self, 'show_server_details_button'):
+            self.show_server_details_button.clicked.connect(self.on_show_server_details_clicked)
+    def on_show_server_details_clicked(self):
+        # Emit signal to be handled by controller
+        self.show_server_details_requested.emit()
 
     def create_card_group(self, title: str) -> QGroupBox:
         group = QGroupBox(title)
