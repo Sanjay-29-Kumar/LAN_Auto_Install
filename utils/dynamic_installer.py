@@ -5,7 +5,6 @@ import time
 import threading
 from pathlib import Path
 from typing import Dict, List, Optional
-from .installer import SoftwareInstaller
 
 class DynamicInstaller:
     def __init__(self, received_files_path: str = None):
@@ -28,9 +27,6 @@ class DynamicInstaller:
         # Create directories if they don't exist
         self.installers_path.mkdir(parents=True, exist_ok=True)
         self.received_files_path.mkdir(parents=True, exist_ok=True)
-        
-        # Initialize software installer
-        self.software_installer = SoftwareInstaller()
         
         # Track installed files
         self.installed_apps = self._load_installed_apps()
@@ -114,41 +110,20 @@ class DynamicInstaller:
         Returns: 'success', 'manual_setup_needed', or 'check_manually'
         """
         try:
-            installer_path_quoted = f'"{installer_path}"'
-            
-            # Use ONLY the most reliable silent command - ONE ATTEMPT ONLY
-            # This prevents multiple popups for the same file
-            cmd = f'{installer_path_quoted} /SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
-            
+            # Silent install command
+            cmd = f'"{str(installer_path)}" /SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
+
+            print("Starting silent installation...")
             try:
-                # Single attempt with very short timeout to detect popups quickly
-                result = subprocess.run(
-                    cmd,
-                    shell=True,
-                    check=False,  # Don't raise exception on non-zero exit
-                    timeout=5,  # Very short timeout - 5 seconds only
-                    capture_output=True,
-                    text=True,
-                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0  # Hide window on Windows
-                )
-                
-                if result.returncode == 0:
-                    return 'success'
-                elif result.returncode == 1223:  # User cancelled installation
-                    return 'manual_setup_needed'
-                else:
-                    # Any other return code means there was an error - check manually
-                    return 'check_manually'
-                    
-            except subprocess.TimeoutExpired:
-                # Timeout means user interaction required - manual setup needed
-                return 'manual_setup_needed'
-            except Exception as e:
-                # Any error means check manually
+                subprocess.run(cmd, shell=True, check=True)
+                print("Installation completed successfully.")
+                return 'success'
+            except subprocess.CalledProcessError as e:
+                print(f"Installation failed: {e}")
                 return 'check_manually'
-                
         except Exception as e:
             # Critical error - check manually
+            print(f"An unexpected error occurred: {e}")
             return 'check_manually'
     
     def process_new_installers(self) -> Dict[str, str]:
