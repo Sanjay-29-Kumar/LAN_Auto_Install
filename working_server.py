@@ -74,7 +74,8 @@ class ServerController:
         self.network_server.status_update.connect(self.update_status_bar) # Connect status update signal
         # New UI actions
         if hasattr(self.ui, 'select_all_clients_button'):
-            self.ui.select_all_clients_button.clicked.connect(self.select_all_clients)
+                self.ui.select_all_clients_button.clicked.disconnect()
+                self.ui.select_all_clients_button.clicked.connect(self.select_all_clients)
 
     def update_server_ip_display(self, ip_address):
         self.ui.server_ip_label.setText(f"Server IP: {ip_address}")
@@ -321,7 +322,9 @@ class ServerController:
     def select_all_clients(self):
         for i in range(self.ui.client_list_widget.count()):
             item = self.ui.client_list_widget.item(i)
-            item.setCheckState(Qt.Checked)
+            widget = self.ui.client_list_widget.itemWidget(item)
+            if widget:
+                widget.set_checked(True)
 
     def _is_terminal_status(self, status: str) -> bool:
         if not status:
@@ -362,9 +365,9 @@ if __name__ == "__main__":
     
     # Initialize Controller
     controller = ServerController(network_server, server_window)
-    
+    # Attach controller to window for UI callbacks
+    server_window.controller = controller
     server_window.show()
     app.exec_()
-    
     # Ensure server stops gracefully on exit
     network_server.stop_server()

@@ -230,7 +230,9 @@ class ClientWindow(QMainWindow):
         print("Connect to Selected button clicked!")
 
     def _connect_to_all_clicked(self):
-        print("Connect to All button clicked!")
+        # Call controller's connect_to_all if available
+        if hasattr(self, 'controller') and hasattr(self.controller, 'connect_to_all'):
+            self.controller.connect_to_all()
 
     def _show_client_profile_clicked(self):
         print("Show Client Profile button clicked!")

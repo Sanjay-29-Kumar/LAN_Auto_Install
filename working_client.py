@@ -65,6 +65,7 @@ class ClientController:
         QMessageBox.information(self.ui, "Server Profile", profile_text)
         self.ui.manual_connect_button.clicked.connect(self.connect_manual)
         self.ui.global_back_home_button.clicked.connect(self.ui.show_home) # Connect global back/home button
+        self.ui.connect_to_all_button.clicked.disconnect()
         self.ui.connect_to_all_button.clicked.connect(self.connect_to_all) # Connect connect to all button
 
     def show_server_profile(self, item):
@@ -170,20 +171,20 @@ class ClientController:
     def connect_to_selected(self):
         for i in range(self.ui.server_list_widget.count()):
             item = self.ui.server_list_widget.item(i)
-            if item.checkState() == Qt.Checked:
-                ip = item.text().split('(')[1].replace(')', '').split(' ')[0]
-                if ip in self.network_client.servers:
-                    server_info = self.network_client.servers[ip]
+            widget = self.ui.server_list_widget.itemWidget(item)
+            if widget and widget.is_checked():
+                if hasattr(widget, 'server_info'):
+                    server_info = widget.server_info
                     self.network_client._connect_to_server(server_info['ip'], server_info['port'])
 
     def connect_to_all(self):
         """Connects to all discovered servers."""
         for i in range(self.ui.server_list_widget.count()):
             item = self.ui.server_list_widget.item(i)
-            if item.checkState() == Qt.Checked: # Only connect to those that are checked
-                ip = item.text().split('(')[1].replace(')', '').split(' ')[0]
-                if ip in self.network_client.servers:
-                    server_info = self.network_client.servers[ip]
+            widget = self.ui.server_list_widget.itemWidget(item)
+            if widget and widget.is_checked():
+                if hasattr(widget, 'server_info'):
+                    server_info = widget.server_info
                     self.network_client._connect_to_server(server_info['ip'], server_info['port'])
 
     def connect_manual(self):
@@ -241,10 +242,10 @@ if __name__ == "__main__":
     
     # Initialize Controller
     controller = ClientController(network_client, client_window)
-    
+    # Attach controller to window for UI callbacks
+    client_window.controller = controller
     client_window.show()
     app.exec_()
-    
     # Ensure client stops gracefully on exit
     network_client.stop_client()
     try:

@@ -264,7 +264,9 @@ class ServerWindow(QMainWindow):
         print("Manual IP Connect button clicked!")
 
     def _select_all_clients_clicked(self):
-        print("Select All Clients button clicked!")
+        # Call controller's select_all_clients if available
+        if hasattr(self, 'controller') and hasattr(self.controller, 'select_all_clients'):
+            self.controller.select_all_clients()
 
     def _select_files_clicked(self):
         print("Select Files to Share button clicked!")
