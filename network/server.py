@@ -570,7 +570,7 @@ class NetworkServer(QObject):
                     message = json.dumps(server_info).encode('utf-8')
                     # Respond to discovery request
                     self.discovery_socket.sendto(message, addr)
-                    print(f"Sent advertisement to {addr[0]}")
+                    print(f"Sent advertisement to {addr[0]} with IP: {server_info['ip']}")
             except socket.timeout:
                 # No discovery request received, continue advertising
                 pass
