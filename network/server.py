@@ -116,17 +116,69 @@ class NetworkServer(QObject):
                 client_socket.settimeout(30)  # Set timeout for client operations
                 client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
                 
+                # Wait for client information
+                try:
+                    # Receive client info with timeout
+                    client_socket.settimeout(5)  # Short timeout for initial info
+                    data = client_socket.recv(4096)
+                    client_socket.settimeout(30)  # Restore normal timeout
+                    
+                    if data:
+                        try:
+                            # Parse client information
+                            message = json.loads(data.decode('utf-8').strip())
+                            if message.get("type") == "CLIENT_INFO":
+                                client_info = {
+                                    "ip": client_ip,
+                                    "hostname": message.get("hostname", "Unknown Client"),
+                                    "os_type": message.get("os_type", "Unknown OS"),
+                                    "is_windows": message.get("is_windows", False),
+                                    "connected_at": time.time()
+                                }
+                                print(f"Received client info: {client_info['hostname']} ({client_info['os_type']})")
+                            else:
+                                # Fallback if no proper client info received
+                                client_info = {
+                                    "ip": client_ip,
+                                    "hostname": "Unknown Client",
+                                    "os_type": "Unknown OS",
+                                    "is_windows": False,
+                                    "connected_at": time.time()
+                                }
+                        except (json.JSONDecodeError, UnicodeDecodeError):
+                            # Fallback for invalid JSON
+                            client_info = {
+                                "ip": client_ip,
+                                "hostname": "Unknown Client",
+                                "os_type": "Unknown OS",
+                                "is_windows": False,
+                                "connected_at": time.time()
+                            }
+                    else:
+                        # No data received, use fallback
+                        client_info = {
+                            "ip": client_ip,
+                            "hostname": "Unknown Client",
+                            "os_type": "Unknown OS",
+                            "is_windows": False,
+                            "connected_at": time.time()
+                        }
+                        
+                except socket.timeout:
+                    print(f"Timeout waiting for client info from {client_ip}")
+                    client_info = {
+                        "ip": client_ip,
+                        "hostname": "Timeout Client",
+                        "os_type": "Unknown OS",
+                        "is_windows": False,
+                        "connected_at": time.time()
+                    }
+                
                 # Store client information
                 self.clients[client_ip] = {
                     "socket": client_socket,
                     "thread": None,
-                    "info": {
-                        "ip": client_ip,
-                        "hostname": "Unknown",
-                        "os_type": "Unknown",
-                        "is_windows": False,
-                        "connected_at": time.time()
-                    },
+                    "info": client_info,
                     "files_to_send": [],
                     "current_file_transfer": None
                 }
@@ -136,9 +188,9 @@ class NetworkServer(QObject):
                 client_thread.start()
                 self.clients[client_ip]["thread"] = client_thread
                 
-                # Emit signal for UI update
-                self.client_connected.emit(self.clients[client_ip]["info"])
-                self.status_update.emit(f"Client connected: {client_ip}", "green")
+                # Emit signal for UI update with complete client info
+                self.client_connected.emit(client_info)
+                self.status_update.emit(f"Client connected: {client_info['hostname']} ({client_ip})", "green")
                 
             except socket.timeout:
                 # Timeout is expected, continue the loop

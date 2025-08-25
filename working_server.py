@@ -123,21 +123,43 @@ class ServerController:
         self.ui.client_list_widget.clear()
         connected_clients = self.network_server.get_connected_clients()
         for client in connected_clients:
-            hostname = client.get('hostname', '') or 'Unknown'
-            ip = client.get('ip', '')
-            label = f"{hostname}  |  {ip}"
+            # Get client information with proper fallbacks
+            hostname = client.get('hostname', 'Unknown Client')
+            ip = client.get('ip', 'Unknown IP')
+            os_type = client.get('os_type', 'Unknown OS')
+            
+            # Format: "Hostname IP [OS]" - same as client display
+            display_text = f"{hostname} {ip} [{os_type}]"
+            
+            print(f"Adding client to server list: {display_text}")
+            
             item = QListWidgetItem()
-            item.setSizeHint(QSize(400, 56))
-            widget = ProfileListItemWidget(label, show_checkbox=True)
+            item.setSizeHint(QSize(500, 90))  # Further increased size to match widget requirements
+            
+            widget = ProfileListItemWidget(display_text, show_checkbox=True)
             widget.set_checked(False)
             widget.client_info = client
+            
+            # Add detailed tooltip
+            tooltip = f"Client Details:\nHostname: {hostname}\nIP Address: {ip}\nOS: {os_type}"
+            if hasattr(widget, 'label'):
+                widget.label.setToolTip(tooltip)
+            
             def show_profile():
                 self.show_client_profile_by_info(widget.client_info)
             widget.profile_button.clicked.connect(show_profile)
+            
             self.ui.client_list_widget.addItem(item)
             self.ui.client_list_widget.setItemWidget(item, widget)
-        self.ui.connected_clients_label.setText(str(len(connected_clients)))
+            
+        # Update status labels
+        client_count = len(connected_clients)
+        self.ui.connected_clients_label.setText(str(client_count))
         self.ui.connection_status_label.setText("Connected" if connected_clients else "Not Connected")
+        
+        # Status update
+        if client_count > 0:
+            self.update_status_bar(f"{client_count} client(s) connected", "green")
 
     def show_client_profile_by_ip(self, ip):
         client_info = self.network_server.clients.get(ip, {}).get('info')
@@ -186,10 +208,13 @@ class ServerController:
         selected_clients = []
         for i in range(self.ui.client_list_widget.count()):
             item = self.ui.client_list_widget.item(i)
-            if item.checkState() == Qt.Checked:
-                # Assuming the text is "hostname (ip)"
-                ip = item.text().split('(')[1].replace(')', '')
-                selected_clients.append(ip)
+            widget = self.ui.client_list_widget.itemWidget(item)
+            if widget and widget.is_checked():
+                # Get IP from the client_info stored in the widget
+                if hasattr(widget, 'client_info'):
+                    ip = widget.client_info.get('ip')
+                    if ip:
+                        selected_clients.append(ip)
         
         if not selected_clients:
             QMessageBox.warning(self.ui, "No Clients Selected", "Please select at least one client to send files to.")
