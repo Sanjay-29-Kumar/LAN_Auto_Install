@@ -193,7 +193,8 @@ class ClientController:
             QMessageBox.warning(self.ui, "Invalid IP", "Please enter a valid IP address.")
             return
         
-        # Use default command port
+        ip = self.ui.manual_ip_input.text().strip()
+        ip = self.ui.manual_ip_input.text().strip()
         port = protocol.COMMAND_PORT
         self.network_client._connect_to_server(ip, port)
 

@@ -50,7 +50,6 @@ class NetworkServer(QObject):
 
     def __init__(self, host='0.0.0.0', port=protocol.COMMAND_PORT, discovery_port=protocol.DISCOVERY_PORT):
         super().__init__()
-        self.host = host
         self.port = port
         self.discovery_port = discovery_port
         self.server_socket = None
@@ -62,6 +61,7 @@ class NetworkServer(QObject):
         self.file_transfer_states = defaultdict(lambda: defaultdict(dict)) # {client_ip: {file_name: {sent_bytes, total_bytes, chunks_acked}}}
         self.files_to_distribute = [] # List of files selected by the user for distribution
         self.server_ip = None # To store the server's actual IP
+        self.host = host
 
     def start_server(self):
         if self.running:

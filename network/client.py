@@ -91,6 +91,9 @@ class NetworkClient(QObject):
         print("Client stopped.")
 
     def _connect_to_server(self, server_ip, server_port):
+        if not server_ip:
+            print("No server IP provided")
+            return
         if server_ip in self.connected_servers:
             print(f"Already connected to {server_ip}")
             return
