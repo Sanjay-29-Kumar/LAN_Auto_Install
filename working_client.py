@@ -85,22 +85,55 @@ class ClientController:
         # Avoid duplicates
         for i in range(self.ui.server_list_widget.count()):
             widget = self.ui.server_list_widget.itemWidget(self.ui.server_list_widget.item(i))
-            if widget and hasattr(widget, 'label') and server_info['ip'] in widget.label.text():
+            if widget and hasattr(widget, 'server_info') and widget.server_info.get('ip') == server_info.get('ip'):
+                # Update existing entry with latest info
+                hostname = server_info.get('hostname', 'Unknown Host')
+                ip = server_info.get('ip', 'Unknown IP')
+                os_type = server_info.get('os_type', 'Unknown OS')
+                
+                # Format: "Hostname IP [OS]" - ensure full display
+                display_text = f"{hostname} {ip} [{os_type}]"
+                
+                # Update the widget with new info
+                widget.server_info = server_info
+                if hasattr(widget, 'label'):
+                    widget.label.setText(display_text)
+                    widget.label.setToolTip(f"Server: {hostname}\nIP: {ip}\nOS: {os_type}\nPort: {server_info.get('port', 'Unknown')}")
                 return
 
-        hostname = server_info.get('hostname', '') or 'Unknown'
-        ip = server_info.get('ip', '')
-        label = f"{hostname}  |  {ip}"
+        # Create new entry
+        hostname = server_info.get('hostname', 'Unknown Host')
+        ip = server_info.get('ip', 'Unknown IP')
+        os_type = server_info.get('os_type', 'Unknown OS')
+        port = server_info.get('port', 5001)
+        
+        # Format: "Hostname IP [OS]" - ensure full display
+        display_text = f"{hostname} {ip} [{os_type}]"
+        
+        print(f"Adding server to list: {display_text}")
+        
         item = QListWidgetItem()
-        item.setSizeHint(QSize(400, 56))
-        widget = ProfileListItemWidget(label, show_checkbox=True)
-        widget.set_checked(server_info['ip'] == self.network_client.local_ip)
+        item.setSizeHint(QSize(450, 70))  # Increased size for better display
+        
+        widget = ProfileListItemWidget(display_text, show_checkbox=True)
+        widget.set_checked(False)  # Don't auto-check
         widget.server_info = server_info
+        
+        # Add detailed tooltip
+        tooltip = f"Server Details:\nHostname: {hostname}\nIP Address: {ip}\nOS: {os_type}\nPort: {port}"
+        if hasattr(widget, 'label'):
+            widget.label.setToolTip(tooltip)
+        
         def show_profile():
             self.show_server_profile_by_info(widget.server_info)
         widget.profile_button.clicked.connect(show_profile)
+        
         self.ui.server_list_widget.addItem(item)
         self.ui.server_list_widget.setItemWidget(item, widget)
+        
+        # Status update
+        self.ui.update_status_bar(f"Found server: {hostname} ({ip})", "green")
+        
         # Auto-connect to each discovered server
         try:
             self.network_client._connect_to_server(server_info['ip'], server_info['port'])

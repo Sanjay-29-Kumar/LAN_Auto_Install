@@ -2,34 +2,107 @@ from PyQt5.QtWidgets import QWidget
 class ProfileListItemWidget(QWidget):
     """
     Custom widget for device list items with a label, checkbox, and a profile button.
+    Enhanced to properly display server information without truncation.
     """
     def __init__(self, label_text, show_checkbox=True, parent=None):
         super().__init__(parent)
+        
+        # Set minimum height for better display
+        self.setMinimumHeight(70)
+        
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 2, 8, 2)
-        layout.setSpacing(8)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(12)
+        
+        # Checkbox
         self.checkbox = QCheckBox()
         self.checkbox.setVisible(show_checkbox)
+        self.checkbox.setFixedSize(20, 20)
+        
+        # Main content area
+        content_layout = QVBoxLayout()
+        content_layout.setSpacing(4)
+        
+        # Parse the label text to extract components
+        hostname, ip, os_info = self._parse_server_info(label_text)
+        
+        # Primary label (hostname + IP)
         self.label = QLabel()
         self.label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self.label.setStyleSheet("font-size: 13pt; padding: 2px 8px 2px 0px;")
-        # Use HTML for better formatting: name bold, IP smaller
-        if '|' in label_text:
-            parts = label_text.split('|')
-            name = parts[0].strip()
-            ip = parts[1].strip()
-            self.label.setText(f'<b style="font-size:14pt;">{name}</b><br><span style="font-size:11pt;color:#aaa;">{ip}</span>')
-        else:
-            self.label.setText(label_text)
-        self.profile_button = QPushButton()
-        self.profile_button.setIcon(self.style().standardIcon(QStyle.SP_FileDialogInfoView))
-        self.profile_button.setToolTip("Show Profile")
-        self.profile_button.setFixedSize(36, 36)
-        self.profile_button.setStyleSheet("background:#2a2a40; border-radius:18px; padding:2px;")
+        
+        # Format as "Hostname IP" with proper styling
+        primary_text = f'<b style="font-size:14pt; color:#e5e7eb;">{hostname}</b> <span style="font-size:13pt; color:#22c55e;">{ip}</span>'
+        self.label.setText(primary_text)
+        self.label.setWordWrap(False)  # Prevent wrapping
+        
+        # Secondary label (OS info)
+        self.secondary_label = QLabel()
+        self.secondary_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.secondary_label.setText(f'<span style="font-size:11pt; color:#9ca3af;">{os_info}</span>')
+        self.secondary_label.setWordWrap(False)
+        
+        content_layout.addWidget(self.label)
+        content_layout.addWidget(self.secondary_label)
+        
+        # Profile button with "Detail" text
+        self.profile_button = QPushButton("Detail")
+        self.profile_button.setToolTip("Show Server Details")
+        self.profile_button.setFixedSize(60, 32)
+        self.profile_button.setStyleSheet("""
+            QPushButton {
+                background-color: #3b82f6;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                font-size: 11pt;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background-color: #2563eb;
+            }
+            QPushButton:pressed {
+                background-color: #1d4ed8;
+            }
+        """)
+        
+        # Layout assembly
         layout.addWidget(self.checkbox, 0)
-        layout.addWidget(self.label, 1)
+        layout.addLayout(content_layout, 1)
         layout.addWidget(self.profile_button, 0)
         self.setLayout(layout)
+    
+    def _parse_server_info(self, label_text):
+        """Parse server information from label text"""
+        try:
+            # Handle different formats
+            if '[' in label_text and ']' in label_text:
+                # Format: "Hostname IP [OS]"
+                parts = label_text.split(' [')
+                main_part = parts[0].strip()
+                os_part = parts[1].rstrip(']').strip() if len(parts) > 1 else 'Unknown OS'
+                
+                # Split hostname and IP
+                main_parts = main_part.split(' ')
+                if len(main_parts) >= 2:
+                    # Last part should be IP, everything else is hostname
+                    ip = main_parts[-1]
+                    hostname = ' '.join(main_parts[:-1])
+                else:
+                    hostname = main_part
+                    ip = 'Unknown IP'
+                
+                return hostname, ip, os_part
+            elif '|' in label_text:
+                # Legacy format: "Hostname | IP"
+                parts = label_text.split('|')
+                hostname = parts[0].strip()
+                ip = parts[1].strip() if len(parts) > 1 else 'Unknown IP'
+                return hostname, ip, 'Unknown OS'
+            else:
+                # Single text, assume it's hostname
+                return label_text.strip(), 'Unknown IP', 'Unknown OS'
+        except Exception:
+            return label_text.strip(), 'Unknown IP', 'Unknown OS'
 
     def is_checked(self):
         return self.checkbox.isChecked()
