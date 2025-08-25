@@ -3,8 +3,11 @@ import subprocess
 import json
 import time
 import threading
+import sys # Added for sys.executable
 from pathlib import Path
 from typing import Dict, List, Optional
+
+from auto_installer import AutoInstaller # Import AutoInstaller
 
 class DynamicInstaller:
     def __init__(self, received_files_path: str = None):
@@ -27,6 +30,8 @@ class DynamicInstaller:
         # Create directories if they don't exist
         self.installers_path.mkdir(parents=True, exist_ok=True)
         self.received_files_path.mkdir(parents=True, exist_ok=True)
+
+        self.auto_installer = AutoInstaller(str(self.installers_path)) # Initialize AutoInstaller
         
         # Track installed files
         self.installed_apps = self._load_installed_apps()
@@ -56,7 +61,8 @@ class DynamicInstaller:
     
     def get_installer_files(self) -> List[Path]:
         """Get all installer files in the received files directory"""
-        installer_extensions = ['.exe', '.msi', '.msix']
+        # Use extensions from AutoInstaller's SILENT_COMMANDS
+        installer_extensions = list(self.auto_installer.SILENT_COMMANDS.keys())
         installer_files = []
         
         if self.installers_path.exists():
@@ -75,9 +81,9 @@ class DynamicInstaller:
         }
         
         for installed_file in self.installed_apps.get("installed_files", []):
+            # Check only name and size to prevent re-processing due to timestamp changes
             if (installed_file.get("name") == file_info["name"] and 
-                installed_file.get("size") == file_info["size"] and
-                installed_file.get("modified") == file_info["modified"]):
+                installed_file.get("size") == file_info["size"]):
                 return True
         
         return False
@@ -106,24 +112,36 @@ class DynamicInstaller:
         self._save_installed_apps()
     
     def install_file_silently(self, installer_path: Path) -> str:
-        """Install a file using ONE silent installation attempt only
+        """Install a file using the AutoInstaller's logic.
         Returns: 'success', 'manual_setup_needed', or 'check_manually'
         """
-        try:
-            # Silent install command
-            cmd = f'"{str(installer_path)}" /SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
+        ext = installer_path.suffix.lower()
+        installer_func = self.auto_installer.SILENT_COMMANDS.get(ext)
 
-            print("Starting silent installation...")
-            try:
-                subprocess.run(cmd, shell=True, check=True)
-                print("Installation completed successfully.")
+        if not installer_func:
+            print(f"No install handler configured for file: {installer_path.name}")
+            return 'check_manually'
+
+        print(f"Starting silent installation for {installer_path.name}...")
+        try:
+            ret_code = installer_func(installer_path)
+            if ret_code == 0:
+                print(f"Installation of {installer_path.name} completed successfully.")
                 return 'success'
-            except subprocess.CalledProcessError as e:
-                print(f"Installation failed: {e}")
+            elif ret_code == 1: # Specific return code for manual setup needed from install_exe
+                print(f"Installation of {installer_path.name} requires manual intervention.")
+                return 'manual_setup_needed'
+            elif ret_code == -1:
+                print(f"Installation of {installer_path.name} failed or requires manual intervention (e.g., ISO not mounted).")
+                # For .iso files, AutoInstaller explicitly states manual intervention
+                if ext == '.iso':
+                    return 'manual_setup_needed'
+                return 'check_manually' # For other failures, check manually
+            else:
+                print(f"Installation of {installer_path.name} returned non-zero exit code: {ret_code}")
                 return 'check_manually'
         except Exception as e:
-            # Critical error - check manually
-            print(f"An unexpected error occurred: {e}")
+            print(f"An unexpected error occurred during installation of {installer_path.name}: {e}")
             return 'check_manually'
     
     def process_new_installers(self) -> Dict[str, str]:

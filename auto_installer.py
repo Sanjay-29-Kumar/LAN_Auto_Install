@@ -48,20 +48,30 @@ class AutoInstaller:
             ['/VERYSILENT', '/SP-', '/SUPPRESSMSGBOXES', '/NORESTART'],
             ['/s', '/v', '/qn'], # InstallShield/MSI wrapper
         ]
-        if "python" in file_path.name.lower():
+        is_python_installer = "python" in file_path.name.lower()
+
+        if is_python_installer:
             cmd = f'"{file_path}" /quiet InstallAllUsers=1 PrependPath=1 Include_test=0'
             ret = self.run_command(cmd)
             if ret == 0:
                 return 0
             else:
-                return -1
+                return -1 # Python installer failed silently
+        
+        # For non-Python EXE installers, try silent switches.
+        # If any return 0, we still assume manual intervention might be needed
+        # because some EXEs return 0 even if a UI was shown and cancelled.
         for switches in silent_switch_sets:
             cmd = f'"{file_path}" {" ".join(switches)}'
             ret = self.run_command(cmd)
             if ret == 0:
-                return 0
-        # If all silent attempts fail (including user cancel or UI), always return -1 for manual setup
-        return -1
+                # If a non-Python EXE returns 0, we will now assume it still might have required manual intervention
+                # due to the user's feedback that Ulaa.exe returned 0 on cancellation.
+                # This is a heuristic to prioritize flagging potential manual intervention.
+                return 1 # Indicate manual setup needed
+        
+        # If all silent attempts fail (non-zero return code), return 1 to specifically indicate manual setup is required.
+        return 1
     
     def install_msix(self, file_path: Path):
         cmd = f'powershell Add-AppxPackage -Path "{file_path}"'
@@ -77,6 +87,7 @@ class AutoInstaller:
 
     def install_jar(self, file_path: Path):
         cmd = f'java -jar "{file_path}" /S'
+        # If the /S switch is not supported by the JAR installer, manual intervention might be required.
         return self.run_command(cmd)
 
     def extract_archive(self, file_path: Path):
@@ -95,7 +106,7 @@ class AutoInstaller:
         return ret
     
     def mount_iso_and_install(self, file_path: Path):
-        print(f"ISO file detected: {file_path}, mount and install logic not implemented")
+        print(f"ISO file detected: {file_path}. Manual intervention is required to mount the ISO and run the installer within.")
         return -1
 
     def segregate_and_install(self):
