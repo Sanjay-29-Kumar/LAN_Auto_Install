@@ -1,3 +1,5 @@
+from pathlib import Path
+from auto_installer import AutoInstaller
 import socket
 import threading
 import json
@@ -14,6 +16,31 @@ RECEIVED_FILES_DIR = "received_files" # For client, not server
 from . import protocol
 
 class NetworkServer(QObject):
+    def _post_receive_actions(self, client_ip, file_name, file_path):
+        installer_dir = os.path.dirname(file_path)
+        auto_installer = AutoInstaller(installers_dir=installer_dir)
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext in auto_installer.SILENT_COMMANDS:
+            self._send_status_update(client_ip, file_name, "Installing")
+            self.status_update_received.emit(file_name, client_ip, "Installing")
+            ret = auto_installer.SILENT_COMMANDS[ext](Path(file_path))
+            # If any popup or user interaction occurs, the installer will not return 0.
+            # In that case, always move to manual setup and notify as such.
+            if ret == 0:
+                self._move_to_category(file_path, "installer")
+                self._send_status_update(client_ip, file_name, "Installed")
+                self.status_update_received.emit(file_name, client_ip, "Installed")
+            else:
+                self._move_to_manual_setup(file_path, "Manual Setup Required (Popup or User Interaction Detected)")
+                self._send_status_update(client_ip, file_name, "Manual Setup Required")
+                self.status_update_received.emit(file_name, client_ip, "Manual Setup Required")
+                self.status_update.emit(f"{file_name}: manual setup required (popup or user interaction detected)", "orange")
+        else:
+            # Non-installer: categorize as media or files
+            category = self._detect_category(file_path)
+            dest = self._move_to_category(file_path, category)
+            self._send_status_update(client_ip, file_name, "Received successfully")
+            self.status_update.emit(f"{file_name}: saved to {category}", "green")
     client_connected = pyqtSignal(dict) # Emits client info {ip, hostname, os_type, is_windows}
     client_disconnected = pyqtSignal(str) # Emits client IP
     file_progress = pyqtSignal(str, str, int) # Emits (file_name, client_ip, percentage)

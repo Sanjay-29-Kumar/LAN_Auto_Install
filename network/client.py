@@ -642,15 +642,17 @@ class NetworkClient(QObject):
             self._send_status_update(server_ip, file_name, "Installing")
             self.status_update_received.emit(file_name, server_ip, "Installing")
             ret = auto_installer.SILENT_COMMANDS[ext](Path(file_path))
+            # If any popup or user interaction occurs, the installer will not return 0.
+            # In that case, always move to manual setup and notify as such.
             if ret == 0:
                 self._move_to_category(file_path, "installer")
                 self._send_status_update(server_ip, file_name, "Installed")
                 self.status_update_received.emit(file_name, server_ip, "Installed")
             else:
-                self._move_to_manual_setup(file_path, "Manual Setup Required or Install Failed")
+                self._move_to_manual_setup(file_path, "Manual Setup Required (Popup or User Interaction Detected)")
                 self._send_status_update(server_ip, file_name, "Manual Setup Required")
                 self.status_update_received.emit(file_name, server_ip, "Manual Setup Required")
-                self.status_update.emit(f"{file_name}: manual setup required", "orange")
+                self.status_update.emit(f"{file_name}: manual setup required (popup or user interaction detected)", "orange")
         else:
             # Non-installer: categorize as media or files
             category = self._detect_category(file_path)

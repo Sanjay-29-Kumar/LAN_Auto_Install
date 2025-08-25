@@ -50,12 +50,17 @@ class AutoInstaller:
         ]
         if "python" in file_path.name.lower():
             cmd = f'"{file_path}" /quiet InstallAllUsers=1 PrependPath=1 Include_test=0'
-            return self.run_command(cmd)
+            ret = self.run_command(cmd)
+            if ret == 0:
+                return 0
+            else:
+                return -1
         for switches in silent_switch_sets:
             cmd = f'"{file_path}" {" ".join(switches)}'
             ret = self.run_command(cmd)
             if ret == 0:
                 return 0
+        # If all silent attempts fail (including user cancel or UI), always return -1 for manual setup
         return -1
     
     def install_msix(self, file_path: Path):
