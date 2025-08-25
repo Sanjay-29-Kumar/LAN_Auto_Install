@@ -140,9 +140,9 @@ class NetworkClient(QObject):
         
         try:
             client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            client_socket.settimeout(10)  # Increased timeout for better LAN connectivity
+            client_socket.settimeout(15)  # Increased timeout for better LAN connectivity
             client_socket.connect((server_ip, server_port))
-            client_socket.settimeout(30)  # Keep longer timeout for data operations
+            client_socket.settimeout(60)  # Much longer timeout for data operations to prevent disconnections
 
             # Enable TCP keepalive to reduce idle disconnects
             try:

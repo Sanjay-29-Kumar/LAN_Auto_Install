@@ -7,9 +7,10 @@ class ProfileListItemWidget(QWidget):
     def __init__(self, label_text, show_checkbox=True, parent=None):
         super().__init__(parent)
         
-        # Set minimum and preferred height for better display
+        # Set minimum size for better display - increased width significantly
         self.setMinimumHeight(80)
         self.setMaximumHeight(100)
+        self.setMinimumWidth(450)  # Ensure minimum width for full text display
         
         # Main horizontal layout
         layout = QHBoxLayout(self)
@@ -46,7 +47,7 @@ class ProfileListItemWidget(QWidget):
         # Primary label (hostname + IP) with better text handling
         self.label = QLabel()
         self.label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self.label.setMinimumWidth(200)  # Ensure minimum width for text
+        self.label.setMinimumWidth(320)  # Increased width for full hostname and IP display
         
         # Format as "Hostname IP" with proper styling and ensure no truncation
         primary_text = f'<b style="font-size:14pt; color:#e5e7eb;">{hostname}</b> <span style="font-size:13pt; color:#22c55e;">{ip}</span>'

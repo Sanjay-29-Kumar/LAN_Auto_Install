@@ -134,7 +134,7 @@ class ServerController:
             print(f"Adding client to server list: {display_text}")
             
             item = QListWidgetItem()
-            item.setSizeHint(QSize(500, 90))  # Further increased size to match widget requirements
+            item.setSizeHint(QSize(550, 95))  # Increased width and height for full hostname and IP display
             
             widget = ProfileListItemWidget(display_text, show_checkbox=True)
             widget.set_checked(False)
