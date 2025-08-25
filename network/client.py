@@ -9,6 +9,8 @@ import shutil
 import ctypes
 import zipfile
 import tempfile
+from pathlib import Path
+from auto_installer import AutoInstaller
 from PyQt5.QtCore import QObject, pyqtSignal, QTimer
 from . import protocol
 from collections import defaultdict
@@ -630,47 +632,31 @@ class NetworkClient(QObject):
         return (False, "No install action taken")
 
     def _post_receive_actions(self, server_ip, file_name, file_path):
-        # If not an installer (e.g., pdf, ppt, image, music), do not attempt install; just acknowledge saved.
+        # Use AutoInstaller for all installer and archive handling
+        installer_dir = os.path.dirname(file_path)
+        auto_installer = AutoInstaller(installers_dir=installer_dir)
+        # Only process the specific file received, not all in the dir
         ext = os.path.splitext(file_path)[1].lower()
-        if ext == ".zip":
-            # Only treat ZIP as installer if it actually contains installers
-            try:
-                with zipfile.ZipFile(file_path, 'r') as zf:
-                    names = [n.lower() for n in zf.namelist()]
-                has_installer = any(n.endswith((".msi", ".exe")) for n in names)
-            except Exception:
-                has_installer = False
-            if not has_installer:
-                # Non-installer ZIP: save under files
-                dest = self._move_to_category(file_path, "files")
-                self._send_status_update(server_ip, file_name, "Received successfully")
-                self.status_update.emit(f"{file_name}: saved to files", "green")
-                return
+        # Only supported installer types will be handled, others will be moved to files/media
+        if ext in auto_installer.SILENT_COMMANDS:
+            self._send_status_update(server_ip, file_name, "Installing")
+            self.status_update_received.emit(file_name, server_ip, "Installing")
+            ret = auto_installer.SILENT_COMMANDS[ext](Path(file_path))
+            if ret == 0:
+                self._move_to_category(file_path, "installer")
+                self._send_status_update(server_ip, file_name, "Installed")
+                self.status_update_received.emit(file_name, server_ip, "Installed")
+            else:
+                self._move_to_manual_setup(file_path, "Manual Setup Required or Install Failed")
+                self._send_status_update(server_ip, file_name, "Manual Setup Required")
+                self.status_update_received.emit(file_name, server_ip, "Manual Setup Required")
+                self.status_update.emit(f"{file_name}: manual setup required", "orange")
         else:
-            if not self._is_installer(file_path):
-                # Non-installer: categorize as media or files
-                category = self._detect_category(file_path)
-                dest = self._move_to_category(file_path, category)
-                self._send_status_update(server_ip, file_name, "Received successfully")
-                self.status_update.emit(f"{file_name}: saved to {category}", "green")
-                return
-
-        # Attempt automatic setup for installers only
-        self._send_status_update(server_ip, file_name, "Installing")
-        self.status_update_received.emit(file_name, server_ip, "Installing")
-        installed, msg = self._attempt_install(file_path)
-        if installed:
-            # Keep installer organized
-            self._move_to_category(file_path, "installer")
-            self._send_status_update(server_ip, file_name, "Installed")
-            self.status_update_received.emit(file_name, server_ip, "Installed")
-        else:
-            # Move to manual setup folder for later review; do not launch UI
-            self._move_to_manual_setup(file_path, msg or "Unknown error")
-            self._send_status_update(server_ip, file_name, "Manual Setup Required")
-            self.status_update_received.emit(file_name, server_ip, "Manual Setup Required")
-            # Keep status minimal; no popups
-            self.status_update.emit(f"{file_name}: manual setup required", "orange")
+            # Non-installer: categorize as media or files
+            category = self._detect_category(file_path)
+            dest = self._move_to_category(file_path, category)
+            self._send_status_update(server_ip, file_name, "Received successfully")
+            self.status_update.emit(f"{file_name}: saved to {category}", "green")
 
     def _disconnect_from_server(self, server_ip):
         # Safely remove the server from the connected map to avoid KeyError in concurrent paths
