@@ -70,8 +70,10 @@ class NetworkServer(QObject):
         try:
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # Enable TCP keepalive
+            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
             self.server_socket.bind((self.host, self.port))
-            self.server_socket.listen(5)
+            self.server_socket.listen(10)  # Increased backlog for better connection handling
             self.running = True
             threading.Thread(target=self._accept_connections, daemon=True).start()
             self.start_discovery_server()
@@ -105,61 +107,51 @@ class NetworkServer(QObject):
     def _accept_connections(self):
         while self.running:
             try:
-                client_socket, addr = self.server_socket.accept()
-                client_ip = addr[0]
-                print(f"Accepted connection from {client_ip}:{addr[1]}")
+                self.server_socket.settimeout(1.0)  # Add timeout to prevent blocking
+                client_socket, client_address = self.server_socket.accept()
+                client_ip = client_address[0]
+                print(f"Client connected from {client_ip}")
                 
-                # Set socket options to improve stability
-                try:
-                    client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-                except Exception:
-                    pass
-                try:
-                    client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                except Exception:
-                    pass
+                # Configure client socket
+                client_socket.settimeout(30)  # Set timeout for client operations
+                client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
                 
-                # Receive client info
-                client_socket.settimeout(5) # Timeout for initial info
-                client_info_raw = client_socket.recv(CHUNK_SIZE)
-                client_socket.settimeout(None) # Remove timeout
+                # Store client information
+                self.clients[client_ip] = {
+                    "socket": client_socket,
+                    "thread": None,
+                    "info": {
+                        "ip": client_ip,
+                        "hostname": "Unknown",
+                        "os_type": "Unknown",
+                        "is_windows": False,
+                        "connected_at": time.time()
+                    },
+                    "files_to_send": [],
+                    "current_file_transfer": None
+                }
                 
-                if not client_info_raw:
-                    print(f"No client info received from {client_ip}, closing connection.")
-                    client_socket.close()
-                    continue
-
-                try:
-                    client_info = json.loads(client_info_raw.decode('utf-8').split('\n', 1)[0])
-                    if client_info.get("type") == "CLIENT_INFO":
-                        client_info["ip"] = client_ip # Ensure IP is correct
-                        self.clients[client_ip] = {
-                            "socket": client_socket,
-                            "info": client_info,
-                            "files_to_send": [], # Queue for files to send to this client
-                            "current_file_transfer": None, # {file_path, file_name, file_size, sent_bytes, file_handle, chunks_acked}
-                            "cancel_event": threading.Event()
-                        }
-                        client_thread = threading.Thread(target=self._handle_client, args=(client_socket, client_ip))
-                        client_thread.daemon = True
-                        client_thread.start()
-                        self.clients[client_ip]["thread"] = client_thread
-                        self.client_connected.emit(client_info)
-                        self.status_update.emit(f"Client {client_ip} connected", "green")
-                        print(f"Client {client_ip} info: {client_info}")
-                    else:
-                        print(f"Invalid initial message from {client_ip}: {client_info_raw.decode('utf-8', errors='ignore')}")
-                        client_socket.close()
-                except json.JSONDecodeError:
-                    print(f"Non-JSON client info from {client_ip}: {client_info_raw.decode('utf-8', errors='ignore')}")
-                    client_socket.close()
-
+                # Start a thread to handle this client
+                client_thread = threading.Thread(target=self._handle_client, args=(client_socket, client_ip), daemon=True)
+                client_thread.start()
+                self.clients[client_ip]["thread"] = client_thread
+                
+                # Emit signal for UI update
+                self.client_connected.emit(self.clients[client_ip]["info"])
+                self.status_update.emit(f"Client connected: {client_ip}", "green")
+                
             except socket.timeout:
-                continue # Continue accepting if timeout occurs
+                # Timeout is expected, continue the loop
+                continue
+            except OSError:
+                if self.running:
+                    print("Error accepting connections")
+                break
             except Exception as e:
                 if self.running:
-                    print(f"Error accepting connection: {e}")
-                break
+                    print(f"Unexpected error in accept_connections: {e}")
+                    self.status_update.emit(f"Connection error: {e}", "red")
+                    time.sleep(1) # Brief pause before retrying
 
     def _handle_client(self, client_socket, client_ip):
         buffer = b""
@@ -244,25 +236,56 @@ class NetworkServer(QObject):
             print(f"Unknown message type from client {client_ip}: {message}")
 
     def _get_local_ip(self):
-        # Determine the best local IP address to advertise/listen with
+        """Get the most appropriate local IP address for LAN communication"""
+        # Method 1: Connect to a remote address to determine the best local IP
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            # This doesn't actually send data to the internet, just determines the outbound interface
             s.connect(("8.8.8.8", 80))
             ip = s.getsockname()[0]
             s.close()
-            if ip and not ip.startswith("127."):
+            if ip and not ip.startswith("127.") and not ip.startswith("169.254."):
                 return ip
         except Exception:
             pass
-        # Fallback: hostname resolution (may return 127.0.0.1 on some systems)
+        
+        # Method 2: Get all network interfaces and find the best LAN IP
+        try:
+            import subprocess
+            if platform.system() == "Windows":
+                result = subprocess.run(["ipconfig"], capture_output=True, text=True)
+                lines = result.stdout.split('\n')
+                for line in lines:
+                    if "IPv4 Address" in line and ":" in line:
+                        ip = line.split(":")[1].strip()
+                        if ip and not ip.startswith("127.") and not ip.startswith("169.254."):
+                            return ip
+            else:
+                result = subprocess.run(["hostname", "-I"], capture_output=True, text=True)
+                ips = result.stdout.strip().split()
+                for ip in ips:
+                    if not ip.startswith("127.") and not ip.startswith("169.254."):
+                        return ip
+        except Exception:
+            pass
+        
+        # Method 3: Fallback to hostname resolution
         try:
             ip = socket.gethostbyname(socket.gethostname())
-            if ip and not ip.startswith("127."):
+            if ip and not ip.startswith("127.") and not ip.startswith("169.254."):
                 return ip
         except Exception:
             pass
-        # Last resort
+        
+        # Method 4: Get all available IPs and pick the best one
+        try:
+            hostname = socket.gethostname()
+            ip_list = socket.gethostbyname_ex(hostname)[2]
+            for ip in ip_list:
+                if not ip.startswith("127.") and not ip.startswith("169.254."):
+                    return ip
+        except Exception:
+            pass
+        
         return "127.0.0.1"
 
     def get_server_ip(self):
@@ -531,13 +554,16 @@ class NetworkServer(QObject):
         self.discovery_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         
         try:
-            self.discovery_socket.bind(('', self.discovery_port))
+            # Bind to all interfaces on the discovery port
+            self.discovery_socket.bind(('0.0.0.0', self.discovery_port))
             self.discovery_server_running = True
             self.discovery_thread = threading.Thread(target=self._discovery_advertisement_loop, daemon=True)
             self.discovery_thread.start()
             print(f"Discovery server started, advertising on port {self.discovery_port}")
+            self.status_update.emit(f"Discovery server started on port {self.discovery_port}", "green")
         except Exception as e:
             print(f"Error starting discovery server: {e}")
+            self.status_update.emit(f"Discovery server error: {e}", "red")
             self.discovery_server_running = False
 
     def stop_discovery_server(self):
@@ -552,29 +578,57 @@ class NetworkServer(QObject):
         print("Discovery server stopped.")
 
     def _discovery_advertisement_loop(self):
+        last_ip_update = 0
+        ip_update_interval = 10  # Update IP every 10 seconds
+        
         while self.discovery_server_running:
             try:
+                # Periodically update server IP in case of network changes
+                current_time = time.time()
+                if current_time - last_ip_update >= ip_update_interval:
+                    old_ip = self.server_ip
+                    self.server_ip = self._get_local_ip()
+                    if old_ip != self.server_ip:
+                        print(f"Server IP updated from {old_ip} to {self.server_ip}")
+                        self.server_ip_updated.emit(self.server_ip)
+                    last_ip_update = current_time
+                
                 # Listen for discovery requests
                 self.discovery_socket.settimeout(1) # Timeout for recvfrom
                 data, addr = self.discovery_socket.recvfrom(1024)
-                if data.decode('utf-8') == "DISCOVER_SERVER":
-                    # Build advertisement with the most accurate IP at send time
-                    server_info = {
-                        "type": "SERVER_ADVERTISEMENT",
-                        "ip": self.server_ip or self._get_local_ip(),
-                        "port": self.port,
-                        "hostname": socket.gethostname(),
-                        "os_type": platform.system(),
-                        "is_windows": platform.system() == "Windows"
-                    }
-                    message = json.dumps(server_info).encode('utf-8')
-                    # Respond to discovery request
-                    self.discovery_socket.sendto(message, addr)
-                    print(f"Sent advertisement to {addr[0]} with IP: {server_info['ip']}")
+                
+                try:
+                    message_text = data.decode('utf-8')
+                    if message_text == "DISCOVER_SERVER":
+                        # Build advertisement with the most accurate IP at send time
+                        current_ip = self.server_ip or self._get_local_ip()
+                        server_info = {
+                            "type": "SERVER_ADVERTISEMENT",
+                            "ip": current_ip,
+                            "port": self.port,
+                            "hostname": socket.gethostname(),
+                            "os_type": platform.system(),
+                            "is_windows": platform.system() == "Windows",
+                            "timestamp": time.time()
+                        }
+                        response = json.dumps(server_info).encode('utf-8')
+                        
+                        # Send response back to the requesting client
+                        try:
+                            self.discovery_socket.sendto(response, addr)
+                            print(f"Sent advertisement to {addr[0]} with server IP: {current_ip}")
+                        except Exception as e:
+                            print(f"Failed to send advertisement to {addr[0]}: {e}")
+                            
+                except UnicodeDecodeError:
+                    print(f"Received non-UTF8 discovery message from {addr[0]}")
+                    
             except socket.timeout:
-                # No discovery request received, continue advertising
+                # No discovery request received, continue
                 pass
             except Exception as e:
                 if self.discovery_server_running:
                     print(f"Error in server discovery loop: {e}")
-            time.sleep(1) # Advertise every second
+                    self.status_update.emit(f"Discovery error: {e}", "red")
+            
+            time.sleep(0.1)  # Check more frequently for better responsiveness

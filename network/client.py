@@ -55,21 +55,56 @@ class NetworkClient(QObject):
         self._reconnect_in_progress = set()
 
     def _get_local_ip(self):
+        """Get the most appropriate local IP address for LAN communication"""
+        # Method 1: Connect to a remote address to determine the best local IP
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
             ip = s.getsockname()[0]
             s.close()
-            if ip and not ip.startswith("127."):
+            if ip and not ip.startswith("127.") and not ip.startswith("169.254."):
                 return ip
         except Exception:
             pass
+        
+        # Method 2: Get all network interfaces and find the best LAN IP
+        try:
+            import subprocess
+            if platform.system() == "Windows":
+                result = subprocess.run(["ipconfig"], capture_output=True, text=True)
+                lines = result.stdout.split('\n')
+                for line in lines:
+                    if "IPv4 Address" in line and ":" in line:
+                        ip = line.split(":")[1].strip()
+                        if ip and not ip.startswith("127.") and not ip.startswith("169.254."):
+                            return ip
+            else:
+                result = subprocess.run(["hostname", "-I"], capture_output=True, text=True)
+                ips = result.stdout.strip().split()
+                for ip in ips:
+                    if not ip.startswith("127.") and not ip.startswith("169.254."):
+                        return ip
+        except Exception:
+            pass
+        
+        # Method 3: Fallback to hostname resolution
         try:
             ip = socket.gethostbyname(socket.gethostname())
-            if ip and not ip.startswith("127."):
+            if ip and not ip.startswith("127.") and not ip.startswith("169.254."):
                 return ip
         except Exception:
             pass
+        
+        # Method 4: Get all available IPs and pick the best one
+        try:
+            hostname = socket.gethostname()
+            ip_list = socket.gethostbyname_ex(hostname)[2]
+            for ip in ip_list:
+                if not ip.startswith("127.") and not ip.startswith("169.254."):
+                    return ip
+        except Exception:
+            pass
+        
         return "127.0.0.1"
 
     def start_client(self):
@@ -93,16 +128,21 @@ class NetworkClient(QObject):
     def _connect_to_server(self, server_ip, server_port):
         if not server_ip:
             print("No server IP provided")
+            self.status_update.emit("No server IP provided", "red")
             return
         if server_ip in self.connected_servers:
             print(f"Already connected to {server_ip}")
+            self.status_update.emit(f"Already connected to {server_ip}", "yellow")
             return
 
+        print(f"Attempting to connect to server {server_ip}:{server_port}")
+        self.status_update.emit(f"Connecting to {server_ip}...", "blue")
+        
         try:
             client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            client_socket.settimeout(5) # Timeout for connection
+            client_socket.settimeout(10)  # Increased timeout for better LAN connectivity
             client_socket.connect((server_ip, server_port))
-            client_socket.settimeout(None) # Remove timeout after connection
+            client_socket.settimeout(30)  # Keep longer timeout for data operations
 
             # Enable TCP keepalive to reduce idle disconnects
             try:
@@ -687,21 +727,25 @@ class NetworkClient(QObject):
         if self.discovery_client_running:
             return
 
+        # Create separate sockets for sending and receiving
         self.discovery_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.discovery_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         self.discovery_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.discovery_socket.settimeout(1) # Timeout for recvfrom
+        self.discovery_socket.settimeout(2)  # Increased timeout for better reliability
 
-        discovery_port = protocol.DISCOVERY_PORT # Must match server's discovery port
+        discovery_port = protocol.DISCOVERY_PORT
         try:
-            self.discovery_socket.bind(('', self.port)) # Bind to ephemeral port for sending
+            # Bind to any available port for sending broadcasts
+            self.discovery_socket.bind(('', 0))
             self.discovery_client_running = True
             self.discovery_thread = threading.Thread(target=self._discovery_loop, args=(discovery_port,))
             self.discovery_thread.daemon = True
             self.discovery_thread.start()
-            print(f"Discovery client started, listening on port {self.port}")
+            print(f"Discovery client started, broadcasting to port {discovery_port}")
+            self.status_update.emit("Discovery client started", "green")
         except Exception as e:
             print(f"Error starting discovery client: {e}")
+            self.status_update.emit(f"Discovery error: {e}", "red")
             self.discovery_client_running = False
 
     def stop_discovery_client(self):
@@ -716,26 +760,67 @@ class NetworkClient(QObject):
         print("Discovery client stopped.")
 
     def _discovery_loop(self, discovery_port):
+        last_broadcast = 0
+        broadcast_interval = 3  # Broadcast every 3 seconds
+        
         while self.discovery_client_running:
             try:
-                # Send discovery broadcast
-                self.discovery_socket.sendto("DISCOVER_SERVER".encode('utf-8'), ('<broadcast>', discovery_port))
+                current_time = time.time()
+                
+                # Send discovery broadcast at intervals
+                if current_time - last_broadcast >= broadcast_interval:
+                    try:
+                        # Broadcast to multiple common network ranges
+                        broadcast_addresses = ['<broadcast>', '255.255.255.255']
+                        
+                        # Try to get network broadcast addresses
+                        try:
+                            local_ip = self._get_local_ip()
+                            if local_ip and not local_ip.startswith('127.'):
+                                # Calculate broadcast address for common subnet masks
+                                ip_parts = local_ip.split('.')
+                                if len(ip_parts) == 4:
+                                    # Assume /24 subnet
+                                    broadcast_addr = f"{ip_parts[0]}.{ip_parts[1]}.{ip_parts[2]}.255"
+                                    broadcast_addresses.append(broadcast_addr)
+                        except Exception:
+                            pass
+                        
+                        for broadcast_addr in broadcast_addresses:
+                            try:
+                                self.discovery_socket.sendto("DISCOVER_SERVER".encode('utf-8'), (broadcast_addr, discovery_port))
+                            except Exception as e:
+                                print(f"Failed to broadcast to {broadcast_addr}: {e}")
+                        
+                        last_broadcast = current_time
+                        print(f"Sent discovery broadcast to port {discovery_port}")
+                    except Exception as e:
+                        print(f"Error sending discovery broadcast: {e}")
                 
                 # Listen for server advertisements
-                data, addr = self.discovery_socket.recvfrom(1024)
-                message = json.loads(data.decode('utf-8'))
-                if message.get("type") == "SERVER_ADVERTISEMENT":
-                    server_ip = message.get("ip")
-                    if server_ip not in self.servers:
-                        self.servers[server_ip] = message
-                        self.server_found.emit(message)
-                        print(f"Discovered server: {server_ip}")
-            except socket.timeout:
-                # No server found in this cycle, continue
-                pass
-            except json.JSONDecodeError:
-                print(f"Received non-JSON discovery message from {addr}")
+                try:
+                    data, addr = self.discovery_socket.recvfrom(1024)
+                    message = json.loads(data.decode('utf-8'))
+                    if message.get("type") == "SERVER_ADVERTISEMENT":
+                        server_ip = message.get("ip")
+                        if server_ip and server_ip not in self.servers:
+                            message['last_seen'] = time.time()
+                            self.servers[server_ip] = message
+                            self.server_found.emit(message)
+                            print(f"Discovered server: {server_ip} from {addr[0]}")
+                            self.status_update.emit(f"Found server: {server_ip}", "green")
+                except socket.timeout:
+                    # No server response in this cycle, continue
+                    pass
+                except json.JSONDecodeError as e:
+                    print(f"Received non-JSON discovery message from {addr}: {e}")
+                except Exception as e:
+                    if self.discovery_client_running:
+                        print(f"Error receiving discovery response: {e}")
+                
             except Exception as e:
                 if self.discovery_client_running:
                     print(f"Error in client discovery loop: {e}")
-            time.sleep(5) # Broadcast every 5 seconds
+                    self.status_update.emit(f"Discovery error: {e}", "red")
+            
+            time.sleep(0.5)  # Check more frequently for better responsiveness
