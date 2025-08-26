@@ -359,20 +359,29 @@ class NetworkClient(QObject):
         self.file_progress.emit(file_name, server_ip, percentage)
 
         if current_file_transfer["received_bytes"] >= file_size:
-            file_handle.close()
-            print(f"Finished receiving {file_name} from {server_ip}")
-            # Inform server that the file was received successfully
-            self._send_file_ack(server_ip, file_name, "Received")
-            # Also update local UI row
-            self.status_update_received.emit(file_name, server_ip, "Received")
-            # Offload install to background worker; do not block socket thread
             try:
-                file_path = current_file_transfer["file_path"]
-            except Exception:
-                file_path = None
-            if file_path:
-                threading.Thread(target=self._post_receive_actions_wrapper, args=(server_ip, file_name, file_path), daemon=True).start()
-            current_file_transfer.clear() # Reset for next file
+                file_handle.close()
+                print(f"Finished receiving {file_name} from {server_ip}")
+                
+                # Send ACK immediately after file completion
+                self._send_file_ack(server_ip, file_name, "Received")
+                self._send_status_update(server_ip, file_name, "Received")
+                
+                # Update local UI
+                self.status_update_received.emit(file_name, server_ip, "Received")
+                self.status_update.emit(f"Successfully received {file_name} from {server_ip}", "green")
+                
+                # Offload install to background worker; do not block socket thread
+                file_path = current_file_transfer.get("file_path")
+                if file_path:
+                    threading.Thread(target=self._post_receive_actions_wrapper, args=(server_ip, file_name, file_path), daemon=True).start()
+                    
+            except Exception as e:
+                print(f"Error completing file reception for {file_name}: {e}")
+                self._send_file_ack(server_ip, file_name, "Error")
+                self.status_update_received.emit(file_name, server_ip, "Error")
+            finally:
+                current_file_transfer.clear() # Reset for next file
 
     def _send_file_ack(self, server_ip, file_name, status):
         if server_ip in self.connected_servers:
@@ -724,20 +733,21 @@ class NetworkClient(QObject):
             self.status_update.emit(f"{file_name}: saved to {category}", "green")
 
     def _disconnect_from_server(self, server_ip):
-        # Safely remove the server from the connected map to avoid KeyError in concurrent paths
-        data = self.connected_servers.pop(server_ip, None)
-        if not data:
-            # Already disconnected elsewhere
-            return
-        server_socket = data.get("socket")
-        try:
-            server_socket.shutdown(socket.SHUT_RDWR)
-            server_socket.close()
-        except Exception as e:
-            print(f"Error closing socket for {server_ip}: {e}")
-        self.connection_status.emit(server_ip, False)
-        self.status_update.emit(f"Disconnected from {server_ip}", "red")
-        print(f"Disconnected from server {server_ip}.")
+        if server_ip in self.connected_servers:
+            server_socket = self.connected_servers[server_ip]["socket"]
+            try:
+                server_socket.shutdown(socket.SHUT_RDWR)
+                server_socket.close()
+            except OSError:
+                pass
+            del self.connected_servers[server_ip]
+            try:
+                self.connection_status.emit(server_ip, False)
+                self.status_update.emit(f"Disconnected from {server_ip}", "red")
+            except RuntimeError:
+                # QObject may already be deleted during shutdown
+                pass
+            print(f"Disconnected from server {server_ip}.")
         # Schedule auto-reconnect unless stopped manually
         server_port = self.servers.get(server_ip, {}).get('port', protocol.COMMAND_PORT)
         self._schedule_reconnect(server_ip, server_port)

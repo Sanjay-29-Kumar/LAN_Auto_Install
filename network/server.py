@@ -457,13 +457,31 @@ class NetworkServer(QObject):
 
     def _disconnect_client(self, client_ip):
         if client_ip in self.clients:
-            client_socket = self.clients[client_ip]["socket"]
+            client_data = self.clients[client_ip]
+            client_socket = client_data["socket"]
+            
+            # Cancel any ongoing file transfers
+            if "cancel_event" in client_data:
+                client_data["cancel_event"].set()
+            
+            # Mark current transfer as cancelled if exists
+            current_transfer = client_data.get("current_file_transfer")
+            if current_transfer:
+                file_name = current_transfer.get("file_name", "Unknown")
+                self.status_update_received.emit(file_name, client_ip, "Cancelled")
+                self.status_update.emit(f"Transfer cancelled due to disconnection: {file_name}", "red")
+            
+            # Clear pending transfers
+            client_data["files_to_send"].clear()
+            
             try:
                 client_socket.shutdown(socket.SHUT_RDWR)
                 client_socket.close()
             except OSError as e:
                 print(f"Error closing socket for {client_ip}: {e}")
+            
             del self.clients[client_ip]
+            
             try:
                 self.client_disconnected.emit(client_ip)
                 self.status_update.emit(f"Client {client_ip} disconnected", "red")
