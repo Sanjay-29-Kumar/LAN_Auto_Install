@@ -9,8 +9,8 @@ import platform
 from PyQt5.QtCore import QObject, pyqtSignal, QTimer
 from collections import defaultdict
 
-# Define chunk size for file transfers
-CHUNK_SIZE = 4096
+# Define chunk size for file transfers - increased for better performance
+CHUNK_SIZE = 65536  # 64KB chunks for better throughput
 RECEIVED_FILES_DIR = "received_files" # For client, not server
 
 from . import protocol
@@ -112,16 +112,23 @@ class NetworkServer(QObject):
                 client_ip = client_address[0]
                 print(f"Client connected from {client_ip}")
                 
-                # Configure client socket
-                client_socket.settimeout(30)  # Set timeout for client operations
+                # Configure client socket with better settings for multiple connections
+                client_socket.settimeout(120)  # Longer timeout for file operations
                 client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                # Increase socket buffer sizes for better performance
+                try:
+                    client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1048576)  # 1MB receive buffer
+                    client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1048576)  # 1MB send buffer
+                except Exception:
+                    pass  # Some systems may not support these options
                 
                 # Wait for client information
                 try:
                     # Receive client info with timeout
                     client_socket.settimeout(5)  # Short timeout for initial info
                     data = client_socket.recv(4096)
-                    client_socket.settimeout(30)  # Restore normal timeout
+                    client_socket.settimeout(120)  # Restore longer timeout for file operations
                     
                     if data:
                         try:
@@ -207,14 +214,32 @@ class NetworkServer(QObject):
 
     def _handle_client(self, client_socket, client_ip):
         buffer = b""
+        last_activity = time.time()
+        
         while self.running:
             try:
-                data = client_socket.recv(CHUNK_SIZE)
-                if not data:
+                # Use non-blocking socket with select for better concurrent handling
+                client_socket.settimeout(0.1)  # Short timeout for non-blocking behavior
+                try:
+                    data = client_socket.recv(CHUNK_SIZE)
+                    if data:
+                        last_activity = time.time()
+                    else:
+                        # Client disconnected gracefully
+                        break
+                except socket.timeout:
+                    # Check for client timeout (no activity for too long)
+                    if time.time() - last_activity > 300:  # 5 minutes timeout
+                        print(f"Client {client_ip} timed out due to inactivity")
+                        break
+                    continue  # Continue waiting for data
+                except (ConnectionResetError, OSError) as e:
+                    print(f"Client {client_ip} connection error: {e}")
                     break
 
                 buffer += data
 
+                # Process complete JSON messages
                 while b'\n' in buffer:
                     line, remaining_buffer = buffer.split(b'\n', 1)
                     try:
@@ -222,20 +247,15 @@ class NetworkServer(QObject):
                         self._process_client_message(client_ip, message)
                         buffer = remaining_buffer
                     except json.JSONDecodeError:
-                        print(f"Non-JSON data or incomplete JSON from client {client_ip}: {line.decode('utf-8', errors='ignore')}")
-                        buffer = remaining_buffer # Keep processing if it was just incomplete JSON
-                        break # Exit inner loop to process remaining buffer as file data or next message
+                        print(f"Non-JSON data from client {client_ip}: {line.decode('utf-8', errors='ignore')[:100]}...")
+                        buffer = remaining_buffer
+                        break
 
-            except ConnectionResetError:
-                print(f"Client {client_ip} disconnected unexpectedly.")
-                break
-            except OSError:
-                print(f"Client {client_ip} socket error; disconnecting.")
-                break
-            except Exception:
+            except Exception as e:
                 if self.running:
-                    print(f"Error handling client {client_ip}; disconnecting.")
+                    print(f"Unexpected error handling client {client_ip}: {e}")
                 break
+                
         self._disconnect_client(client_ip)
 
     def _process_client_message(self, client_ip, message):
@@ -243,32 +263,20 @@ class NetworkServer(QObject):
         if msg_type == "FILE_ACK":
             file_name = message.get("file_name")
             status = message.get("status")
-            # Map duplicate ack to server-friendly text
-            display_status = "Sent already" if status == "Received already" else status
             print(f"Received ACK for {file_name} from {client_ip} with status: {status}")
-            self.status_update_received.emit(file_name, client_ip, display_status)
+            self.status_update_received.emit(file_name, client_ip, status)
             # Track ack status for this client/file
             st = self.file_transfer_states[client_ip][file_name]
             st["status"] = status
             st["ack_status"] = status
-            if status in ("Acknowledged", "Received", "Received already"):
+            if status in ("Acknowledged", "Received"):
                 st["completed"] = True
-            # If already present on client, stop any current/queued send
-            if status == "Received already" and client_ip in self.clients:
-                client_data = self.clients[client_ip]
-                current = client_data.get("current_file_transfer")
-                if current and current.get("file_name") == file_name:
-                    if "cancel_event" in client_data:
-                        client_data["cancel_event"].set()
-                client_data["files_to_send"] = [f for f in client_data["files_to_send"] if f.get("file_name") != file_name]
         elif msg_type == "STATUS_UPDATE":
             file_name = message.get("file_name")
             status = message.get("status")
             # Normalize client statuses for server UI
             if status == "Saved (No Install)":
                 status = "Received successfully"
-            elif status == "Received already":
-                status = "Sent already"
             print(f"STATUS_UPDATE from {client_ip} for {file_name}: {status}")
             self.status_update_received.emit(file_name, client_ip, status)
         elif msg_type == "CANCEL_TRANSFER":
@@ -523,12 +531,11 @@ class NetworkServer(QObject):
                 client_data["socket"].sendall(json.dumps(metadata).encode('utf-8') + b'\n')
                 self.status_update.emit(f"Sending metadata for {file_name} to {client_ip}", "orange")
                 print(f"Sending metadata for {file_name} to {client_ip}")
-                time.sleep(0.1) # Give client time to process metadata
-                # If client already has the file (duplicate ACK) or cancel flag set, skip sending chunks
-                prior_ack = self.file_transfer_states[client_ip][file_name].get("ack_status")
-                if client_data["cancel_event"].is_set() or prior_ack == "Received already":
-                    self.status_update_received.emit(file_name, client_ip, "Sent already")
-                    self.status_update.emit(f"Sent already: {file_name} to {client_ip}", "lightblue")
+                time.sleep(0.05) # Brief pause to let client process metadata
+                # Check for cancellation only, allow duplicates
+                if client_data["cancel_event"].is_set():
+                    self.status_update_received.emit(file_name, client_ip, "Cancelled")
+                    self.status_update.emit(f"Cancelled: {file_name} to {client_ip}", "red")
                     client_data["current_file_transfer"] = None
                     continue
 
@@ -542,40 +549,32 @@ class NetworkServer(QObject):
                         chunk = f.read(CHUNK_SIZE)
                         if not chunk:
                             break
-                        client_data["socket"].sendall(chunk)
-                        sent_bytes += len(chunk)
-                        percentage = int((sent_bytes / file_size) * 100)
-                        self.file_progress.emit(file_name, client_ip, percentage)
-                        self.file_transfer_states[client_ip][file_name]["sent_bytes"] = sent_bytes
-                        self.file_transfer_states[client_ip][file_name]["total_bytes"] = file_size
-                        # Add logic for chunk acknowledgment and retransmission here if needed
-                        # For now, it's a simple stream.
+                        try:
+                            client_data["socket"].sendall(chunk)
+                            sent_bytes += len(chunk)
+                            percentage = int((sent_bytes / file_size) * 100)
+                            self.file_progress.emit(file_name, client_ip, percentage)
+                            self.file_transfer_states[client_ip][file_name]["sent_bytes"] = sent_bytes
+                            self.file_transfer_states[client_ip][file_name]["total_bytes"] = file_size
+                            # Small delay to prevent overwhelming the network
+                            if sent_bytes % (CHUNK_SIZE * 10) == 0:  # Every 10 chunks
+                                time.sleep(0.001)  # 1ms delay
+                        except (ConnectionResetError, OSError, BrokenPipeError) as e:
+                            print(f"Socket error during chunk send to {client_ip}: {e}")
+                            cancelled = True
+                            break
 
                 if cancelled:
                     print(f"Transfer of {file_name} to {client_ip} cancelled.")
-                    ack_status = None
-                    if client_ip in self.file_transfer_states and file_name in self.file_transfer_states[client_ip]:
-                        ack_status = self.file_transfer_states[client_ip][file_name].get("ack_status")
-                    if ack_status == "Received already":
-                        self.status_update_received.emit(file_name, client_ip, "Sent already")
-                        self.status_update.emit(f"Sent already: {file_name} to {client_ip}", "lightblue")
-                    else:
-                        self.status_update_received.emit(file_name, client_ip, "Cancelled")
-                        self.status_update.emit(f"Cancelled transfer of {file_name} to {client_ip}", "red")
+                    self.status_update_received.emit(file_name, client_ip, "Cancelled")
+                    self.status_update.emit(f"Cancelled transfer of {file_name} to {client_ip}", "red")
                 else:
                     print(f"Finished sending {file_name} to {client_ip}")
                     # Ensure final 100% update is emitted
                     self.file_progress.emit(file_name, client_ip, 100)
-                    # Respect any prior ACK (e.g., duplicate)
-                    ack_status = None
-                    if client_ip in self.file_transfer_states and file_name in self.file_transfer_states[client_ip]:
-                        ack_status = self.file_transfer_states[client_ip][file_name].get("ack_status")
-                    if ack_status == "Received already":
-                        self.status_update_received.emit(file_name, client_ip, "Sent already")
-                        self.status_update.emit(f"Sent already: {file_name} to {client_ip}", "lightblue")
-                    else:
-                        self.status_update_received.emit(file_name, client_ip, "Sent - Awaiting ACK")
-                        self.status_update.emit(f"Sent {file_name} to {client_ip}, awaiting ACK", "lightblue")
+                    # File sent successfully, awaiting ACK
+                    self.status_update_received.emit(file_name, client_ip, "Sent - Awaiting ACK")
+                    self.status_update.emit(f"Sent {file_name} to {client_ip}, awaiting ACK", "lightblue")
 
             except ConnectionResetError:
                 print(f"Client {client_ip} disconnected during transfer of {file_name}.")

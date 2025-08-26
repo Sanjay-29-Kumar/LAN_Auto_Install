@@ -15,8 +15,8 @@ from PyQt5.QtCore import QObject, pyqtSignal, QTimer
 from . import protocol
 from collections import defaultdict
 
-# Define chunk size for file transfers
-CHUNK_SIZE = 4096
+# Define chunk size for file transfers - increased for better performance
+CHUNK_SIZE = 65536  # 64KB chunks for better throughput
 RECEIVED_FILES_DIR = "received_files"
 
 class NetworkClient(QObject):
@@ -140,9 +140,16 @@ class NetworkClient(QObject):
         
         try:
             client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            client_socket.settimeout(15)  # Increased timeout for better LAN connectivity
+            client_socket.settimeout(30)  # Connection timeout
             client_socket.connect((server_ip, server_port))
-            client_socket.settimeout(60)  # Much longer timeout for data operations to prevent disconnections
+            client_socket.settimeout(120)  # Longer timeout for file operations
+            
+            # Increase socket buffer sizes for better performance
+            try:
+                client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1048576)  # 1MB receive buffer
+                client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1048576)  # 1MB send buffer
+            except Exception:
+                pass  # Some systems may not support these options
 
             # Enable TCP keepalive to reduce idle disconnects
             try:
@@ -197,24 +204,39 @@ class NetworkClient(QObject):
     def _handle_server(self, server_socket, server_ip):
         buffer = b""
         current_file_transfer = {} # To store state for ongoing file reception
+        last_activity = time.time()
 
         while self.running:
             try:
-                data = server_socket.recv(CHUNK_SIZE)
-                if not data:
-                    # Server closed connection. If mid-file, mark as cancelled/incomplete
-                    if current_file_transfer.get("receiving_file") and \
-                       current_file_transfer.get("received_bytes", 0) < current_file_transfer.get("file_size", 0):
-                        try:
-                            fh = current_file_transfer.get("file_handle")
-                            if fh:
-                                fh.close()
-                        except Exception:
-                            pass
-                        file_name = current_file_transfer.get("file_name", "")
-                        self.status_update_received.emit(file_name, server_ip, "Not Received (Disconnected)")
-                        self.status_update.emit(f"Disconnected during {file_name} from {server_ip}", "red")
-                        current_file_transfer.clear()
+                # Use non-blocking socket with timeout for better concurrent handling
+                server_socket.settimeout(0.1)  # Short timeout for non-blocking behavior
+                try:
+                    data = server_socket.recv(CHUNK_SIZE)
+                    if data:
+                        last_activity = time.time()
+                    else:
+                        # Server closed connection. If mid-file, mark as cancelled/incomplete
+                        if current_file_transfer.get("receiving_file") and \
+                           current_file_transfer.get("received_bytes", 0) < current_file_transfer.get("file_size", 0):
+                            try:
+                                fh = current_file_transfer.get("file_handle")
+                                if fh:
+                                    fh.close()
+                            except Exception:
+                                pass
+                            file_name = current_file_transfer.get("file_name", "")
+                            self.status_update_received.emit(file_name, server_ip, "Not Received (Disconnected)")
+                            self.status_update.emit(f"Disconnected during {file_name} from {server_ip}", "red")
+                            current_file_transfer.clear()
+                        break
+                except socket.timeout:
+                    # Check for server timeout (no activity for too long)
+                    if time.time() - last_activity > 300:  # 5 minutes timeout
+                        print(f"Server {server_ip} timed out due to inactivity")
+                        break
+                    continue  # Continue waiting for data
+                except (ConnectionResetError, OSError) as e:
+                    print(f"Server {server_ip} connection error: {e}")
                     break
 
                 buffer += data
@@ -275,26 +297,24 @@ class NetworkClient(QObject):
             file_name = message.get("file_name")
             file_size = message.get("file_size")
 
-            # Duplicate check before preparing file reception
-            try:
-                fsize = int(file_size)
-            except Exception:
-                fsize = file_size
-            if self._existing_file(file_name, fsize):
-                # Inform server with ACK and skip creating UI row or temp file
-                self._send_file_ack(server_ip, file_name, "Received already")
-                self._send_status_update(server_ip, file_name, "Received already")
-                self.request_cancel_receive(server_ip, file_name)
-                return
+            # Allow duplicates - create unique filename if needed
+            base_name, ext = os.path.splitext(file_name)
+            unique_name = file_name
+            counter = 1
+            temp_path = os.path.join(self.dirs.get("tmp", self.received_files_path), unique_name)
+            while os.path.exists(temp_path):
+                unique_name = f"{base_name}_{counter}{ext}"
+                temp_path = os.path.join(self.dirs.get("tmp", self.received_files_path), unique_name)
+                counter += 1
             
             current_file_transfer.clear() # Clear any previous transfer state
             current_file_transfer["receiving_file"] = True
             current_file_transfer["file_name"] = file_name
+            current_file_transfer["unique_name"] = unique_name
             current_file_transfer["file_size"] = file_size
             current_file_transfer["received_bytes"] = 0
-            # Save initially into a temp folder; will move to category after completed
-            current_file_transfer["file_path"] = os.path.join(self.dirs.get("tmp", self.received_files_path), file_name)
-            current_file_transfer["file_handle"] = open(current_file_transfer["file_path"], 'wb')
+            current_file_transfer["file_path"] = temp_path
+            current_file_transfer["file_handle"] = open(temp_path, 'wb')
             
             print(f"Receiving file metadata: {file_name} ({file_size} bytes) from {server_ip}")
             self.file_received.emit({
