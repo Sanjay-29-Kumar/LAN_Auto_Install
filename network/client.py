@@ -13,10 +13,11 @@ from pathlib import Path
 from auto_installer import AutoInstaller
 from PyQt5.QtCore import QObject, pyqtSignal, QTimer
 from . import protocol
+from .protocol import get_local_ip, get_adaptive_timeouts
 from collections import defaultdict
 
-# Define chunk size for file transfers - increased for better performance
-CHUNK_SIZE = 65536  # 64KB chunks for better throughput
+# Define chunk size for file transfers - will be adaptive based on network topology
+CHUNK_SIZE = 65536  # Default 64KB chunks, will be overridden by adaptive sizing
 RECEIVED_FILES_DIR = "received_files"
 
 class NetworkClient(QObject):
@@ -140,14 +141,23 @@ class NetworkClient(QObject):
         
         try:
             client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            client_socket.settimeout(30)  # Connection timeout
-            client_socket.connect((server_ip, server_port))
-            client_socket.settimeout(120)  # Longer timeout for file operations
+            # Get adaptive timeouts based on network topology
+            local_ip = get_local_ip()
+            timeouts = get_adaptive_timeouts(local_ip, server_ip)
             
-            # Increase socket buffer sizes for better performance
+            client_socket.settimeout(timeouts['connection'])  # Adaptive connection timeout
+            client_socket.connect((server_ip, server_port))
+            client_socket.settimeout(timeouts['operation'])  # Adaptive timeout for file operations
+            
+            # Set adaptive socket buffer sizes for better performance
             try:
-                client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1048576)  # 1MB receive buffer
-                client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1048576)  # 1MB send buffer
+                buffer_size = timeouts.get('buffer_size', 1048576)
+                client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, buffer_size)
+                client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, buffer_size)
+                # Enable TCP keepalive and configure for cross-machine stability
+                client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                if hasattr(socket, 'TCP_USER_TIMEOUT'):
+                    client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT, 60000)  # 60s for cross-machine
             except Exception:
                 pass  # Some systems may not support these options
 
@@ -184,9 +194,12 @@ class NetworkClient(QObject):
             self.connected_servers[server_ip] = {
                 "socket": client_socket,
                 "thread": server_thread,
-                "info": self.servers.get(server_ip, {"ip": server_ip, "port": server_port, "hostname": "Unknown"})
+                "connected_at": time.time(),
+                "timeouts": timeouts,  # Store adaptive timeouts
+                "local_ip": local_ip
             }
-            # Store heartbeat thread
+            # Store timeouts for use in message handling
+            self._current_timeouts = timeouts
             self.connected_servers[server_ip]["heartbeat_thread"] = heartbeat_thread
             self.connection_status.emit(server_ip, True)
             self.status_update.emit(f"Connected to {server_ip}", "green")
@@ -208,8 +221,12 @@ class NetworkClient(QObject):
 
         while self.running:
             try:
-                # Use non-blocking socket with timeout for better concurrent handling
-                server_socket.settimeout(0.1)  # Short timeout for non-blocking behavior
+                # Get adaptive timeouts for this server connection
+                timeouts = getattr(self, '_current_timeouts', {'operation': 120, 'inactivity': 300})
+                is_cross_machine = timeouts.get('connection', 10) > 30
+                
+                # Use adaptive socket timeout for better cross-machine stability
+                server_socket.settimeout(5 if is_cross_machine else 2)  # 5s for cross-machine, 2s for same-machine
                 try:
                     data = server_socket.recv(CHUNK_SIZE)
                     if data:
@@ -230,9 +247,10 @@ class NetworkClient(QObject):
                             current_file_transfer.clear()
                         break
                 except socket.timeout:
-                    # Check for server timeout (no activity for too long)
-                    if time.time() - last_activity > 300:  # 5 minutes timeout
-                        print(f"Server {server_ip} timed out due to inactivity")
+                    # Check for server timeout (no activity for too long) - adaptive timeout
+                    inactivity_timeout = timeouts.get('inactivity', 300)
+                    if time.time() - last_activity > inactivity_timeout:
+                        print(f"Server {server_ip} timed out due to inactivity ({inactivity_timeout}s)")
                         break
                     continue  # Continue waiting for data
                 except (ConnectionResetError, OSError) as e:
@@ -390,11 +408,22 @@ class NetworkClient(QObject):
                 "file_name": file_name,
                 "status": status
             }
-            try:
-                self.connected_servers[server_ip]["socket"].sendall(json.dumps(ack_message).encode('utf-8') + b'\n')
-                print(f"Sent ACK for {file_name} to {server_ip} with status: {status}")
-            except Exception as e:
-                print(f"Error sending ACK to {server_ip}: {e}")
+            # Network error recovery for ACK sending
+            max_retries = 3
+            retry_count = 0
+            
+            while retry_count <= max_retries:
+                try:
+                    self.connected_servers[server_ip]["socket"].sendall(json.dumps(ack_message).encode('utf-8') + b'\n')
+                    print(f"Sent ACK for {file_name} to {server_ip} with status: {status}")
+                    break  # Success, exit retry loop
+                except Exception as e:
+                    retry_count += 1
+                    if retry_count <= max_retries:
+                        print(f"Error sending ACK to {server_ip} (attempt {retry_count}): {e}. Retrying...")
+                        time.sleep(2)  # 2-second delay before retry
+                    else:
+                        print(f"Failed to send ACK to {server_ip} after {max_retries + 1} attempts: {e}")
 
     def _send_status_update(self, server_ip, file_name, status):
         if server_ip in self.connected_servers:
@@ -403,11 +432,22 @@ class NetworkClient(QObject):
                 "file_name": file_name,
                 "status": status
             }
-            try:
-                self.connected_servers[server_ip]["socket"].sendall(json.dumps(msg).encode('utf-8') + b'\n')
-                print(f"Sent STATUS_UPDATE for {file_name} to {server_ip}: {status}")
-            except Exception as e:
-                print(f"Error sending STATUS_UPDATE to {server_ip}: {e}")
+            # Network error recovery for status updates
+            max_retries = 3
+            retry_count = 0
+            
+            while retry_count <= max_retries:
+                try:
+                    self.connected_servers[server_ip]["socket"].sendall(json.dumps(msg).encode('utf-8') + b'\n')
+                    print(f"Sent STATUS_UPDATE for {file_name} to {server_ip}: {status}")
+                    break  # Success, exit retry loop
+                except Exception as e:
+                    retry_count += 1
+                    if retry_count <= max_retries:
+                        print(f"Error sending STATUS_UPDATE to {server_ip} (attempt {retry_count}): {e}. Retrying...")
+                        time.sleep(2)  # 2-second delay before retry
+                    else:
+                        print(f"Failed to send STATUS_UPDATE to {server_ip} after {max_retries + 1} attempts: {e}")
 
     def _run_process_silent(self, args):
         # Run a process with no visible window (Windows) and a generous timeout
@@ -559,22 +599,18 @@ class NetworkClient(QObject):
             self.status_update.emit(f"Post-receive actions failed for {file_name}: {e}", "red")
 
     def _heartbeat_loop(self, server_ip):
-        # Periodically send heartbeat to keep the connection alive
+        """Send periodic heartbeats to keep connection alive with adaptive intervals"""
         while self.running and server_ip in self.connected_servers:
             try:
-                hb = {"type": "HEARTBEAT"}
-                self.connected_servers[server_ip]["socket"].sendall(json.dumps(hb).encode('utf-8') + b'\n')
-            except Exception:
-                pass
-            time.sleep(10)
-
-    def _schedule_reconnect(self, server_ip, server_port):
-        if not self.running:
-            return
-        if server_ip in self.connected_servers:
-            return
-        if server_ip in self._reconnect_in_progress:
-            return
+                # Get adaptive heartbeat interval
+                timeouts = self.connected_servers[server_ip].get('timeouts', {'heartbeat': 30})
+                heartbeat_interval = timeouts.get('heartbeat', 30)
+                
+                heartbeat_msg = {"type": "HEARTBEAT", "timestamp": time.time()}
+                self.connected_servers[server_ip]["socket"].sendall(json.dumps(heartbeat_msg).encode('utf-8') + b'\n')
+                time.sleep(heartbeat_interval)  # Adaptive heartbeat interval
+            except Exception as e:
+                print(f"Heartbeat failed for {server_ip}: {e}")
         self._reconnect_in_progress.add(server_ip)
         threading.Thread(target=self._reconnect_loop, args=(server_ip, server_port), daemon=True).start()
 

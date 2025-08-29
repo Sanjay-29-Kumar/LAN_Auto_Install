@@ -46,6 +46,9 @@ class ClientWindow(QMainWindow):
         self.network_client = network_client
         self.setWindowTitle("LAN Auto Install - Client")
         self.setGeometry(100, 100, 1000, 720)
+        
+        # Track manual setup notifications to prevent duplicates
+        self.manual_setup_notified = set()
 
         # App/window icon
         try:
@@ -105,6 +108,11 @@ class ClientWindow(QMainWindow):
 
         self.create_status_bar()
         self.apply_theme()
+        
+        # Connect network client signals
+        self.network_client.status_update.connect(self.update_status_bar)
+        self.network_client.status_update_received.connect(self.handle_status_update)
+        self.network_client.file_received.connect(self.handle_file_received)
 
     def create_card_group(self, title: str) -> QGroupBox:
         group = QGroupBox(title)
@@ -252,6 +260,19 @@ class ClientWindow(QMainWindow):
         self.receiving_list_widget = QListWidget()
         self.receiving_list_widget.setSpacing(10)
         self.receiving_list_widget.setFrameShape(QFrame.NoFrame)
+        self.receiving_list_widget.setStyleSheet("""
+            QListWidget::item {
+                background: #1f2937;
+                border: 1px solid #374151;
+                border-radius: 8px;
+                padding: 10px;
+                margin: 4px 0;
+            }
+            QListWidget::item:selected {
+                background: #3b82f6;
+                border: 1px solid #60a5fa;
+            }
+        """)
         receiving_vbox.addWidget(self.receiving_list_widget)
 
         receiving_actions = QHBoxLayout()
@@ -272,10 +293,30 @@ class ClientWindow(QMainWindow):
         return widget
 
     def _open_folder_clicked(self):
-        print("Open Folder button clicked!")
+        try:
+            received_dir = os.path.abspath(os.path.join(os.getcwd(), "received_files"))
+            os.makedirs(received_dir, exist_ok=True)
+            
+            if sys.platform == 'win32':
+                os.startfile(received_dir)
+            elif sys.platform == 'darwin':
+                subprocess.Popen(['open', received_dir])
+            else:  # Linux and others
+                subprocess.Popen(['xdg-open', received_dir])
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not open folder: {str(e)}")
 
     def _clear_list_clicked(self):
-        print("Clear List button clicked!")
+        reply = QMessageBox.question(
+            self,
+            'Clear List',
+            'Are you sure you want to clear the transfer list?',
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            self.receiving_list_widget.clear()
+            self.manual_setup_notified.clear()
 
     def create_status_bar(self):
         self.statusBar = QStatusBar()
@@ -283,8 +324,69 @@ class ClientWindow(QMainWindow):
         self.statusBar.showMessage("Ready")
 
     def update_status_bar(self, message, color):
-        self.statusBar.setStyleSheet(f"QStatusBar {{ color: {color}; background: {BG2}; border-top: 1px solid {BORDER}; }}")
+        # Map status colors to theme colors
+        color_map = {
+            'red': '#ef4444',     # red-500
+            'green': '#22c55e',   # green-500
+            'orange': '#f59e0b',  # amber-500
+            'blue': '#3b82f6',    # blue-500
+            'yellow': '#eab308'    # yellow-500
+        }
+        
+        # Default to gray if color not in map
+        status_color = color_map.get(color.lower(), FG)
+        self.statusBar.setStyleSheet(f"QStatusBar {{ color: {status_color}; background: {BG2}; border-top: 1px solid {BORDER}; }}")
         self.statusBar.showMessage(message)
+        
+        # Log to console for debugging
+        print(f"Status: {message}")
+        
+    def handle_status_update(self, file_name, server_ip, status):
+        """Handle status updates for received files"""
+        # Update the status in the receiving list
+        items = self.receiving_list_widget.findItems(file_name, Qt.MatchContains)
+        status_text = f"{file_name} - {status}"
+        
+        if not items:
+            # Add new item if not exists
+            item = QListWidgetItem(status_text)
+            self.receiving_list_widget.addItem(item)
+        else:
+            # Update existing item
+            for item in items:
+                item.setText(status_text)
+        
+        # Show notification for manual setup required
+        if "manual setup" in status.lower() and file_name not in self.manual_setup_notified:
+            self.manual_setup_notified.add(file_name)
+            QMessageBox.information(
+                self,
+                "Manual Setup Required",
+                f"The file '{file_name}' requires manual setup. "
+                f"Please check the 'manual_setup' folder in your received files directory.",
+                QMessageBox.Ok
+            )
+        
+        # Auto-scroll to the bottom
+        self.receiving_list_widget.scrollToBottom()
+    
+    def handle_file_received(self, file_info):
+        """Handle new file received event"""
+        file_name = file_info.get('name', 'Unknown')
+        file_size = file_info.get('size', 0)
+        file_path = file_info.get('path', '')
+        
+        # Format size for display
+        size_mb = file_size / (1024 * 1024)
+        status_text = f"{file_name} - Received ({size_mb:.2f} MB)"
+        
+        # Add to receiving list
+        item = QListWidgetItem(status_text)
+        self.receiving_list_widget.addItem(item)
+        self.receiving_list_widget.scrollToBottom()
+        
+        # Show in status bar
+        self.update_status_bar(f"Received: {file_name}", "green")
 
     def show_home(self):
         self.stacked_widget.setCurrentWidget(self.home_widget)
