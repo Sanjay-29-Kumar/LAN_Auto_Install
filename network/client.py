@@ -612,6 +612,7 @@ class NetworkClient(QObject):
             except Exception as e:
                 print(f"Heartbeat failed for {server_ip}: {e}")
         self._reconnect_in_progress.add(server_ip)
+        server_port = self.servers.get(server_ip, {}).get('port', protocol.COMMAND_PORT)
         threading.Thread(target=self._reconnect_loop, args=(server_ip, server_port), daemon=True).start()
 
     def _reconnect_loop(self, server_ip, server_port):
