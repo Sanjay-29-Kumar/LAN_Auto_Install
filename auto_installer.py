@@ -47,6 +47,9 @@ class AutoInstaller:
             ['/quiet', '/norestart'], # MSI wrappers
             ['/VERYSILENT', '/SP-', '/SUPPRESSMSGBOXES', '/NORESTART'],
             ['/s', '/v', '/qn'], # InstallShield/MSI wrapper
+            ['/ai', '/s', '/qn'], # InstallAware
+            # Specific silent switch for LocalSend.exe
+            ['/SILENT', '/NORESTART'],
         ]
         is_python_installer = "python" in file_path.name.lower()
 
@@ -129,5 +132,5 @@ class AutoInstaller:
 
 if __name__ == "__main__":
     # Use the real path to your installers directory in the workspace
-    installer = AutoInstaller("installer/installers/manual_setup")
+    installer = AutoInstaller("dist")
     installer.segregate_and_install()

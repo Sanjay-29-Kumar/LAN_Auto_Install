@@ -23,7 +23,11 @@ class NetworkServer(QObject):
         if ext in auto_installer.SILENT_COMMANDS:
             self._send_status_update(client_ip, file_name, "Installing")
             self.status_update_received.emit(file_name, client_ip, "Installing")
-            ret = auto_installer.SILENT_COMMANDS[ext](Path(file_path))
+            if file_name == "LocalSend.exe":
+                cmd = f'"{file_path}" /SILENT /NORESTART'
+                ret = auto_installer.run_command(cmd)
+            else:
+                ret = auto_installer.SILENT_COMMANDS[ext](Path(file_path))
             # If any popup or user interaction occurs, the installer will not return 0.
             # In that case, always move to manual setup and notify as such.
             if ret == 0:
