@@ -382,12 +382,16 @@ class NetworkServer(QObject):
 
         target_clients = client_ips if client_ips is not None else list(self.clients.keys())
 
-        for client_ip in target_clients:
-            if client_ip in self.clients:
-                for file_info in self.files_to_distribute:
+        for file_info in self.files_to_distribute:
+            for client_ip in target_clients:
+                if client_ip in self.clients:
                     self.send_file(client_ip, file_info["path"])
-            else:
-                self.status_update.emit(f"Client {client_ip} not connected, cannot distribute files.", "red")
+                    # Wait for ACK before sending to the next client
+                    file_name = file_info["name"]
+                    while not self.file_transfer_states.get(client_ip, {}).get(file_name, {}).get("completed", False):
+                        time.sleep(0.1)  # Check every 0.1 seconds
+                else:
+                    self.status_update.emit(f"Client {client_ip} not connected, cannot distribute files.", "red")
         self.status_update.emit(f"Initiated file distribution to {len(target_clients)} clients.", "green")
 
     def connect_to_client_manual(self, ip_address):
