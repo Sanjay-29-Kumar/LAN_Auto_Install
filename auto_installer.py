@@ -50,6 +50,8 @@ class AutoInstaller:
             ['/ai', '/s', '/qn'], # InstallAware
             # Specific silent switch for LocalSend.exe
             ['/SILENT', '/NORESTART'],
+            ['/q', '/norestart'],
+            ['/S', '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'],
         ]
         is_python_installer = "python" in file_path.name.lower()
 
@@ -68,11 +70,48 @@ class AutoInstaller:
             cmd = f'"{file_path}" {" ".join(switches)}'
             ret = self.run_command(cmd)
             if ret == 0:
-                # If a non-Python EXE returns 0, we will now assume it still might have required manual intervention
-                # due to the user's feedback that Ulaa.exe returned 0 on cancellation.
-                # This is a heuristic to prioritize flagging potential manual intervention.
-                return 1 # Indicate manual setup needed
+            # If a non-Python EXE returns 0, we will now assume it was installed successfully.
+                return 0
+        # If all silent attempts fail (non-zero return code), return 1 to specifically indicate manual setup is required.
+        return 1
+    
+    def install_exe(self, file_path: Path):
+        # Always use the most silent switches possible, no UI, no prompts
+        silent_switch_sets = [
+            ['/S', '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'], # Inno Setup, NSIS
+            ['/S', '/silent', '/NORESTART'],
+            ['/quiet', '/norestart'], # MSI wrappers
+            ['/VERYSILENT', '/SP-', '/SUPPRESSMSGBOXES', '/NORESTART'],
+            ['/s', '/v', '/qn'], # InstallShield/MSI wrapper
+            ['/ai', '/s', '/qn'], # InstallAware
+            # Specific silent switch for LocalSend.exe
+            ['/SILENT', '/NORESTART'],
+            ['/q', '/norestart'],
+            ['/S', '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'],
+        ]
+        is_python_installer = "python" in file_path.name.lower()
+
+        if is_python_installer:
+            cmd = f'"{file_path}" /quiet InstallAllUsers=1 PrependPath=1 Include_test=0'
+            ret = self.run_command(cmd)
+            if ret == 0:
+                return 0
+            else:
+                return -1 # Python installer failed silently
         
+        # For non-Python EXE installers, try silent switches.
+        # If any return 0, we still assume manual intervention might be needed
+        # because some EXEs return 0 even if a UI was shown and cancelled.
+        attempts = 0
+        for switches in silent_switch_sets:
+            attempts += 1
+            cmd = f'"{file_path}" {" ".join(switches)}'
+            ret = self.run_command(cmd)
+            if ret == 0:
+            # If a non-Python EXE returns 0, we will now assume it was installed successfully.
+                return 0
+            if attempts >= 2:
+                break
         # If all silent attempts fail (non-zero return code), return 1 to specifically indicate manual setup is required.
         return 1
     
