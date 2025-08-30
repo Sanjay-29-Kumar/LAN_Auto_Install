@@ -402,28 +402,31 @@ class NetworkClient(QObject):
                 current_file_transfer.clear() # Reset for next file
 
     def _send_file_ack(self, server_ip, file_name, status):
-        if server_ip in self.connected_servers:
-            ack_message = {
-                "type": "FILE_ACK",
-                "file_name": file_name,
-                "status": status
-            }
-            # Network error recovery for ACK sending
-            max_retries = 3
-            retry_count = 0
-            
-            while retry_count <= max_retries:
-                try:
-                    self.connected_servers[server_ip]["socket"].sendall(json.dumps(ack_message).encode('utf-8') + b'\n')
-                    print(f"Sent ACK for {file_name} to {server_ip} with status: {status}")
-                    break  # Success, exit retry loop
-                except Exception as e:
-                    retry_count += 1
-                    if retry_count <= max_retries:
-                        print(f"Error sending ACK to {server_ip} (attempt {retry_count}): {e}. Retrying...")
-                        time.sleep(2)  # 2-second delay before retry
-                    else:
-                        print(f"Failed to send ACK to {server_ip} after {max_retries + 1} attempts: {e}")
+        if server_ip not in self.connected_servers:
+            print(f"Server {server_ip} not in connected_servers, cannot send ACK")
+            return
+
+        ack_message = {
+            "type": "FILE_ACK",
+            "file_name": file_name,
+            "status": status
+        }
+        # Network error recovery for ACK sending
+        max_retries = 3
+        retry_count = 0
+
+        while retry_count <= max_retries:
+            try:
+                self.connected_servers[server_ip]["socket"].sendall(json.dumps(ack_message).encode('utf-8') + b'\n')
+                print(f"Sent ACK for {file_name} to {server_ip} with status: {status}")
+                break  # Success, exit retry loop
+            except Exception as e:
+                retry_count += 1
+                if retry_count <= max_retries:
+                    print(f"Error sending ACK to {server_ip} (attempt {retry_count}): {e}. Retrying...")
+                    time.sleep(2)  # 2-second delay before retry
+                else:
+                    print(f"Failed to send ACK to {server_ip} after {max_retries + 1} attempts: {e}")
 
     def _send_status_update(self, server_ip, file_name, status):
         if server_ip in self.connected_servers:
