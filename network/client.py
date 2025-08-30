@@ -145,9 +145,9 @@ class NetworkClient(QObject):
             local_ip = get_local_ip()
             timeouts = get_adaptive_timeouts(local_ip, server_ip)
             
-            client_socket.settimeout(timeouts['connection'])  # Adaptive connection timeout
+            client_socket.settimeout(timeouts['connection'] * 2)  # Adaptive connection timeout
             client_socket.connect((server_ip, server_port))
-            client_socket.settimeout(timeouts['operation'])  # Adaptive timeout for file operations
+            client_socket.settimeout(timeouts['operation'] * 2)  # Adaptive timeout for file operations
             
             # Set adaptive socket buffer sizes for better performance
             try:
@@ -157,7 +157,7 @@ class NetworkClient(QObject):
                 # Enable TCP keepalive and configure for cross-machine stability
                 client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
                 if hasattr(socket, 'TCP_USER_TIMEOUT'):
-                    client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT, 60000)  # 60s for cross-machine
+                    client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT, 120000)  # 120s for cross-machine
             except Exception:
                 pass  # Some systems may not support these options
 
@@ -613,6 +613,13 @@ class NetworkClient(QObject):
                 print(f"Heartbeat failed for {server_ip}: {e}")
         self._reconnect_in_progress.add(server_ip)
         server_port = self.servers.get(server_ip, {}).get('port', protocol.COMMAND_PORT)
+        self._schedule_reconnect(server_ip, server_port)
+
+    def _schedule_reconnect(self, server_ip, server_port):
+        """Schedules a reconnection attempt."""
+        if server_ip in self._reconnect_in_progress:
+            return  # Prevent duplicate reconnect attempts
+        self._reconnect_in_progress.add(server_ip)
         threading.Thread(target=self._reconnect_loop, args=(server_ip, server_port), daemon=True).start()
 
     def _reconnect_loop(self, server_ip, server_port):
