@@ -585,7 +585,7 @@ class NetworkServer(QObject):
                             # Small delay to prevent overwhelming the network
                             if sent_bytes % (CHUNK_SIZE * 10) == 0:  # Every 10 chunks
                                 time.sleep(0.001)  # 1ms delay
-                        except (ConnectionResetError, OSError, BrokenPipeError) as e:
+                        except (ConnectionResetError, OSError, BrokenPipeError, socket.timeout) as e:
                             print(f"Socket error during chunk send to {client_ip}: {e}")
                             cancelled = True
                             break
