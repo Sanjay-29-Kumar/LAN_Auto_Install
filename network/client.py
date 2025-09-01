@@ -15,6 +15,8 @@ from PyQt5.QtCore import QObject, pyqtSignal, QTimer
 from . import protocol
 from .protocol import get_local_ip, get_adaptive_timeouts
 from collections import defaultdict
+import struct
+import hashlib
 
 # Define chunk size for file transfers - will be adaptive based on network topology
 CHUNK_SIZE = 65536  # Default 64KB chunks, will be overridden by adaptive sizing
@@ -838,7 +840,7 @@ class NetworkClient(QObject):
 
     def _discovery_loop(self, discovery_port):
         last_broadcast = 0
-        broadcast_interval = 3  # Broadcast every 3 seconds
+        broadcast_interval = 2  # More frequent broadcasts for LAN
         
         while self.discovery_client_running:
             try:
@@ -847,30 +849,48 @@ class NetworkClient(QObject):
                 # Send discovery broadcast at intervals
                 if current_time - last_broadcast >= broadcast_interval:
                     try:
-                        # Broadcast to multiple common network ranges
-                        broadcast_addresses = ['<broadcast>', '255.255.255.255']
+                        # Get current local IP for better LAN discovery
+                        local_ip = self._get_local_ip()
+                        broadcast_addresses = []
                         
-                        # Try to get network broadcast addresses
-                        try:
-                            local_ip = self._get_local_ip()
-                            if local_ip and not local_ip.startswith('127.'):
-                                # Calculate broadcast address for common subnet masks
-                                ip_parts = local_ip.split('.')
-                                if len(ip_parts) == 4:
-                                    # Assume /24 subnet
-                                    broadcast_addr = f"{ip_parts[0]}.{ip_parts[1]}.{ip_parts[2]}.255"
-                                    broadcast_addresses.append(broadcast_addr)
-                        except Exception:
-                            pass
+                        # Add multiple broadcast strategies for better LAN coverage
+                        broadcast_addresses.extend(['255.255.255.255', '<broadcast>'])
                         
+                        # Calculate subnet-specific broadcast addresses
+                        if local_ip and not local_ip.startswith('127.'):
+                            ip_parts = local_ip.split('.')
+                            if len(ip_parts) == 4:
+                                # Try multiple subnet masks
+                                # /24 subnet (most common)
+                                broadcast_24 = f"{ip_parts[0]}.{ip_parts[1]}.{ip_parts[2]}.255"
+                                broadcast_addresses.append(broadcast_24)
+                                
+                                # /16 subnet (less common but possible)
+                                broadcast_16 = f"{ip_parts[0]}.{ip_parts[1]}.255.255"
+                                broadcast_addresses.append(broadcast_16)
+                                
+                                # Also try direct IP ranges for common LAN setups
+                                base_ip = f"{ip_parts[0]}.{ip_parts[1]}.{ip_parts[2]}"
+                                # Scan common IP ranges in the same subnet
+                                for i in [1, 254, 100, 101, 102, 103, 104, 105]:  # Common router/server IPs
+                                    target_ip = f"{base_ip}.{i}"
+                                    if target_ip != local_ip:  # Don't broadcast to self
+                                        try:
+                                            # Direct unicast to potential server IPs
+                                            self.discovery_socket.sendto("DISCOVER_SERVER".encode('utf-8'), (target_ip, discovery_port))
+                                        except Exception:
+                                            pass  # Ignore individual failures
+                        
+                        # Send broadcasts
                         for broadcast_addr in broadcast_addresses:
                             try:
                                 self.discovery_socket.sendto("DISCOVER_SERVER".encode('utf-8'), (broadcast_addr, discovery_port))
+                                print(f"Sent discovery to {broadcast_addr}")
                             except Exception as e:
                                 print(f"Failed to broadcast to {broadcast_addr}: {e}")
                         
                         last_broadcast = current_time
-                        print(f"Sent discovery broadcast to port {discovery_port}")
+                        print(f"Sent discovery broadcasts to {len(broadcast_addresses)} addresses")
                     except Exception as e:
                         print(f"Error sending discovery broadcast: {e}")
                 
@@ -880,7 +900,8 @@ class NetworkClient(QObject):
                     message = json.loads(data.decode('utf-8'))
                     if message.get("type") == "SERVER_ADVERTISEMENT":
                         server_ip = message.get("ip")
-                        if server_ip and server_ip not in self.servers:
+                        if server_ip:
+                            # Always update server info, even if we've seen it before
                             message['last_seen'] = time.time()
                             self.servers[server_ip] = message
                             self.server_found.emit(message)
@@ -900,4 +921,4 @@ class NetworkClient(QObject):
                     print(f"Error in client discovery loop: {e}")
                     self.status_update.emit(f"Discovery error: {e}", "red")
             
-            time.sleep(0.5)  # Check more frequently for better responsiveness
+            time.sleep(0.3)  # Faster polling for better LAN responsiveness

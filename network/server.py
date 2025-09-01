@@ -656,7 +656,7 @@ class NetworkServer(QObject):
 
     def _discovery_advertisement_loop(self):
         last_ip_update = 0
-        ip_update_interval = 10  # Update IP every 10 seconds
+        ip_update_interval = 30  # Update IP every 30 seconds (less frequent)
         
         while self.discovery_server_running:
             try:
@@ -670,8 +670,8 @@ class NetworkServer(QObject):
                         self.server_ip_updated.emit(self.server_ip)
                     last_ip_update = current_time
                 
-                # Listen for discovery requests
-                self.discovery_socket.settimeout(1) # Timeout for recvfrom
+                # Listen for discovery requests with longer timeout for better LAN coverage
+                self.discovery_socket.settimeout(2)  # Increased timeout for LAN
                 data, addr = self.discovery_socket.recvfrom(1024)
                 
                 try:
@@ -690,12 +690,17 @@ class NetworkServer(QObject):
                         }
                         response = json.dumps(server_info).encode('utf-8')
                         
-                        # Send response back to the requesting client
-                        try:
-                            self.discovery_socket.sendto(response, addr)
-                            print(f"Sent advertisement to {addr[0]} with server IP: {current_ip}")
-                        except Exception as e:
-                            print(f"Failed to send advertisement to {addr[0]}: {e}")
+                        # Send response back to the requesting client - try multiple times for reliability
+                        for attempt in range(3):  # Try 3 times
+                            try:
+                                self.discovery_socket.sendto(response, addr)
+                                print(f"Sent advertisement to {addr[0]} with server IP: {current_ip} (attempt {attempt + 1})")
+                                break  # Success, exit retry loop
+                            except Exception as e:
+                                if attempt == 2:  # Last attempt
+                                    print(f"Failed to send advertisement to {addr[0]} after 3 attempts: {e}")
+                                else:
+                                    time.sleep(0.1)  # Brief delay before retry
                             
                 except UnicodeDecodeError:
                     print(f"Received non-UTF8 discovery message from {addr[0]}")
@@ -708,4 +713,4 @@ class NetworkServer(QObject):
                     print(f"Error in server discovery loop: {e}")
                     self.status_update.emit(f"Discovery error: {e}", "red")
             
-            time.sleep(0.1)  # Check more frequently for better responsiveness
+            time.sleep(0.1)  # Keep responsive for discovery requests

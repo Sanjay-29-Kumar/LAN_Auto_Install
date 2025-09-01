@@ -57,11 +57,11 @@ CHUNK_SIZE = 1024 * 1024
 
 # Adaptive timeouts based on network topology
 # Cross-machine timeouts (different subnets or slower connections)
-CROSS_MACHINE_CONNECTION_TIMEOUT = 60  # seconds
-CROSS_MACHINE_OPERATION_TIMEOUT = 300  # seconds
-CROSS_MACHINE_INACTIVITY_TIMEOUT = 600  # 10 minutes
-CROSS_MACHINE_ACK_TIMEOUT = 15  # seconds
-CROSS_MACHINE_HEARTBEAT_INTERVAL = 30  # seconds
+CROSS_MACHINE_CONNECTION_TIMEOUT = 120  # seconds
+CROSS_MACHINE_OPERATION_TIMEOUT = 600  # seconds
+CROSS_MACHINE_INACTIVITY_TIMEOUT = 1200  # 20 minutes
+CROSS_MACHINE_ACK_TIMEOUT = 30  # seconds
+CROSS_MACHINE_HEARTBEAT_INTERVAL = 60  # seconds
 
 # Same-machine timeouts (localhost or same subnet)
 SAME_MACHINE_CONNECTION_TIMEOUT = 10  # seconds
@@ -91,6 +91,7 @@ def is_cross_machine_connection(local_ip, remote_ip):
     """
     Determine if connection is cross-machine based on IP subnet comparison.
     Returns True if cross-machine, False if same-machine.
+    Enhanced for better LAN detection.
     """
     try:
         # Same IP = same machine
@@ -101,18 +102,39 @@ def is_cross_machine_connection(local_ip, remote_ip):
         if remote_ip in ["127.0.0.1", "localhost"] or local_ip in ["127.0.0.1", "localhost"]:
             return False
             
-        # Check if IPs are in same subnet (assuming /24 subnet)
-        local_network = ipaddress.IPv4Network(f"{local_ip}/24", strict=False)
-        remote_network = ipaddress.IPv4Network(f"{remote_ip}/24", strict=False)
+        # Check if IPs are in same subnet with multiple subnet mask possibilities
+        local_addr = ipaddress.IPv4Address(local_ip)
+        remote_addr = ipaddress.IPv4Address(remote_ip)
         
-        # Same subnet = likely same machine or very close
-        if local_network.network_address == remote_network.network_address:
-            return False
+        # Check common subnet masks for LAN networks
+        subnet_masks = [24, 16, 20, 22]  # /24, /16, /20, /22 are common
+        
+        for mask in subnet_masks:
+            local_network = ipaddress.IPv4Network(f"{local_ip}/{mask}", strict=False)
+            if remote_addr in local_network:
+                return False  # Same subnet = likely same LAN
+        
+        # Check for common private network ranges
+        private_ranges = [
+            ipaddress.IPv4Network('192.168.0.0/16'),    # 192.168.x.x
+            ipaddress.IPv4Network('10.0.0.0/8'),        # 10.x.x.x
+            ipaddress.IPv4Network('172.16.0.0/12'),     # 172.16-31.x.x
+        ]
+        
+        local_is_private = any(local_addr in network for network in private_ranges)
+        remote_is_private = any(remote_addr in network for network in private_ranges)
+        
+        # If both are in the same private range, consider them same LAN
+        if local_is_private and remote_is_private:
+            for network in private_ranges:
+                if local_addr in network and remote_addr in network:
+                    return False  # Same private network = same LAN
             
-        return True  # Different subnets = cross-machine
-    except Exception:
-        # If we can't determine, assume cross-machine for safety
-        return True
+        return True  # Different networks = cross-machine
+    except Exception as e:
+        print(f"Error determining network topology: {e}")
+        # If we can't determine, assume same machine for better LAN performance
+        return False
 
 def get_adaptive_timeouts(local_ip, remote_ip):
     """Get appropriate timeouts based on network topology."""
