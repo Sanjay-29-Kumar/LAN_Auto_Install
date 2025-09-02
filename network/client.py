@@ -128,7 +128,7 @@ class NetworkClient(QObject):
             self._disconnect_from_server(server_ip)
         print("Client stopped.")
 
-    def _connect_to_server(self, server_ip, server_port):
+    def _connect_to_server(self, server_ip=None, server_port=protocol.COMMAND_PORT):
         if not server_ip:
             print("No server IP provided")
             self.status_update.emit("No server IP provided", "red")
@@ -140,7 +140,7 @@ class NetworkClient(QObject):
 
         print(f"Attempting to connect to server {server_ip}:{server_port}")
         self.status_update.emit(f"Connecting to {server_ip}...", "blue")
-        
+
         try:
             client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             # Get adaptive timeouts based on network topology

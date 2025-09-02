@@ -215,6 +215,7 @@ class ClientWindow(QMainWindow):
         self.manual_ip_input = QLineEdit()
         self.manual_ip_input.setPlaceholderText("Enter server IP")
         self.manual_connect_button = QPushButton("Connect")
+        self.manual_connect_button.setObjectName("primaryButton")
         self.manual_connect_button.clicked.connect(self._manual_connect_clicked)
         manual_hbox.addWidget(self.manual_ip_input, 3)
         manual_hbox.addWidget(self.manual_connect_button, 1)
@@ -244,7 +245,11 @@ class ClientWindow(QMainWindow):
         print("Show Client Profile button clicked!")
 
     def _manual_connect_clicked(self):
-        print("Manual Connect button clicked!")
+        server_ip = self.manual_ip_input.text()
+        if server_ip:
+            self.network_client._connect_to_server(server_ip)
+        else:
+            QMessageBox.warning(self, "Warning", "Please enter a server IP address.")
 
     def create_receiving_widget(self):
         widget = QWidget()
