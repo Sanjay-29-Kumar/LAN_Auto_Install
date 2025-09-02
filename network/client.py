@@ -19,7 +19,7 @@ import struct
 import hashlib
 
 # Define chunk size for file transfers - will be adaptive based on network topology
-CHUNK_SIZE = 65536  # Default 64KB chunks, will be overridden by adaptive sizing
+CHUNK_SIZE = 131072  # Default 128KB chunks, will be overridden by adaptive sizing
 RECEIVED_FILES_DIR = "received_files"
 
 class NetworkClient(QObject):

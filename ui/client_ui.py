@@ -247,7 +247,7 @@ class ClientWindow(QMainWindow):
     def _manual_connect_clicked(self):
         server_ip = self.manual_ip_input.text()
         if server_ip:
-            self.network_client._connect_to_server(server_ip)
+            self.network_client._connect_to_server(server_ip=server_ip)
         else:
             QMessageBox.warning(self, "Warning", "Please enter a server IP address.")
 
