@@ -8,6 +8,9 @@ import time
 import platform
 from PyQt5.QtCore import QObject, pyqtSignal, QTimer
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
+import math
+import base64
 
 # Define chunk size for file transfers - increased for better performance
 CHUNK_SIZE = 65536  # 64KB chunks for better throughput
@@ -66,6 +69,7 @@ class NetworkServer(QObject):
         self.files_to_distribute = [] # List of files selected by the user for distribution
         self.server_ip = None # To store the server's actual IP
         self.host = host
+        self.executor = ThreadPoolExecutor(max_workers=5)  # Limit concurrent transfers
 
     def start_server(self):
         if self.running:
@@ -275,6 +279,27 @@ class NetworkServer(QObject):
             st["ack_status"] = status
             if status in ("Acknowledged", "Received"):
                 st["completed"] = True
+        elif msg_type == "CHUNK_ACK":
+            file_name = message.get("file_name")
+            chunk_id = message.get("chunk_id")
+            status = message.get("status")
+            
+            if client_ip in self.file_transfer_states and file_name in self.file_transfer_states[client_ip]:
+                transfer_state = self.file_transfer_states[client_ip][file_name]
+                if status == "Received":
+                    transfer_state["chunks_acked"].add(chunk_id)
+                    # Update sent_bytes based on acknowledged chunks
+                    transfer_state["sent_bytes"] = len(transfer_state["chunks_acked"]) * CHUNK_SIZE
+                    percentage = int((transfer_state["sent_bytes"] / transfer_state["total_bytes"]) * 100)
+                    self.file_progress.emit(file_name, client_ip, percentage)
+                    # print(f"Received CHUNK_ACK for {file_name} chunk {chunk_id} from {client_ip}. Acked: {len(transfer_state['chunks_acked'])}/{transfer_state['total_chunks']}")
+                elif status == "Error: No active transfer":
+                    # Client indicates it's not ready, re-add to retransmission queue
+                    if chunk_id not in transfer_state["retransmission_queue"]:
+                        transfer_state["retransmission_queue"].append(chunk_id)
+                    print(f"Client {client_ip} reported error for chunk {chunk_id} of {file_name}. Re-queuing.")
+            else:
+                print(f"Received CHUNK_ACK for unknown transfer {file_name} from {client_ip}")
         elif msg_type == "STATUS_UPDATE":
             file_name = message.get("file_name")
             status = message.get("status")
@@ -519,14 +544,16 @@ class NetworkServer(QObject):
             "file_name": file_name,
             "file_size": file_size,
             "sent_bytes": 0,
-            "chunks_acked": set() # For chunk-based retransmission (advanced)
+            "chunks_acked": set(), # For chunk-based retransmission
+            "total_chunks": math.ceil(file_size / CHUNK_SIZE),
+            "last_sent_time": time.time() # For flow control
         })
         self.status_update.emit(f"Queued {file_name} for {client_ip}", "blue")
         print(f"Queued {file_name} for {client_ip}")
         
         # Start sending if not already sending
         if not self.clients[client_ip]["current_file_transfer"]:
-            threading.Thread(target=self._process_file_queue, args=(client_ip,), daemon=True).start()
+            self.executor.submit(self._process_file_queue, client_ip)
 
     def _process_file_queue(self, client_ip):
         client_data = self.clients[client_ip]
@@ -541,24 +568,34 @@ class NetworkServer(QObject):
             file_path = file_info["file_path"]
             file_name = file_info["file_name"]
             file_size = file_info["file_size"]
-            sent_bytes = file_info["sent_bytes"]
+            total_chunks = file_info["total_chunks"]
+            
+            # Initialize transfer state for this file
+            self.file_transfer_states[client_ip][file_name] = {
+                "sent_bytes": 0,
+                "total_bytes": file_size,
+                "chunks_acked": set(),
+                "total_chunks": total_chunks,
+                "last_sent_time": time.time(),
+                "retransmission_queue": list(range(total_chunks)) # All chunks initially need sending
+            }
 
             try:
                 # Send file metadata
-                # ensure cancel_event exists and is cleared before metadata so duplicate ACK can set it later
                 if "cancel_event" not in client_data:
                     client_data["cancel_event"] = threading.Event()
                 client_data["cancel_event"].clear()
                 metadata = {
                     "type": "FILE_METADATA",
                     "file_name": file_name,
-                    "file_size": file_size
+                    "file_size": file_size,
+                    "total_chunks": total_chunks
                 }
                 client_data["socket"].sendall(json.dumps(metadata).encode('utf-8') + b'\n')
                 self.status_update.emit(f"Sending metadata for {file_name} to {client_ip}", "orange")
                 print(f"Sending metadata for {file_name} to {client_ip}")
                 time.sleep(0.05) # Brief pause to let client process metadata
-                # Check for cancellation only, allow duplicates
+                
                 if client_data["cancel_event"].is_set():
                     self.status_update_received.emit(file_name, client_ip, "Cancelled")
                     self.status_update.emit(f"Cancelled: {file_name} to {client_ip}", "red")
@@ -566,41 +603,82 @@ class NetworkServer(QObject):
                     continue
 
                 with open(file_path, 'rb') as f:
-                    f.seek(sent_bytes) # Resume from where it left off if needed
                     cancelled = False
-                    while sent_bytes < file_size and self.running:
+                    # Main loop for sending and retransmitting chunks
+                    while self.running and (len(self.file_transfer_states[client_ip][file_name]["chunks_acked"]) < total_chunks or self.file_transfer_states[client_ip][file_name]["retransmission_queue"]):
                         if client_data["cancel_event"].is_set():
                             cancelled = True
                             break
-                        chunk = f.read(CHUNK_SIZE)
-                        if not chunk:
+
+                        # Prioritize retransmissions
+                        chunks_to_send = list(self.file_transfer_states[client_ip][file_name]["retransmission_queue"])
+                        if not chunks_to_send:
+                            # If no retransmissions, send new chunks
+                            for i in range(total_chunks):
+                                if i not in self.file_transfer_states[client_ip][file_name]["chunks_acked"]:
+                                    chunks_to_send.append(i)
+                                    break # Send one new chunk at a time for flow control
+
+                        if not chunks_to_send: # All chunks sent and acknowledged
                             break
+
+                        chunk_id = chunks_to_send[0]
+                        
+                        # Seek to the correct position for the chunk
+                        f.seek(chunk_id * CHUNK_SIZE)
+                        chunk_data = f.read(CHUNK_SIZE)
+                        
+                        if not chunk_data: # Should not happen if total_chunks is calculated correctly
+                            print(f"Error: Empty chunk data for chunk_id {chunk_id} in {file_name}")
+                            break
+
                         try:
-                            client_data["socket"].sendall(chunk)
-                            sent_bytes += len(chunk)
-                            percentage = int((sent_bytes / file_size) * 100)
-                            self.file_progress.emit(file_name, client_ip, percentage)
-                            self.file_transfer_states[client_ip][file_name]["sent_bytes"] = sent_bytes
-                            self.file_transfer_states[client_ip][file_name]["total_bytes"] = file_size
-                            # Small delay to prevent overwhelming the network
-                            if sent_bytes % (CHUNK_SIZE * 10) == 0:  # Every 10 chunks
-                                time.sleep(0.001)  # 1ms delay
+                            # Encode chunk data to base64 to avoid issues with raw bytes in JSON
+                            chunk_data_b64 = base64.b64encode(chunk_data).decode('utf-8')
+                            chunk_message = {
+                                "type": "FILE_CHUNK",
+                                "file_name": file_name,
+                                "chunk_id": chunk_id,
+                                "chunk_data": chunk_data_b64
+                            }
+                            client_data["socket"].sendall(json.dumps(chunk_message).encode('utf-8') + b'\n')
+                            
+                            # Update last sent time for flow control
+                            self.file_transfer_states[client_ip][file_name]["last_sent_time"] = time.time()
+
+                            # Remove from retransmission queue if it was there
+                            if chunk_id in self.file_transfer_states[client_ip][file_name]["retransmission_queue"]:
+                                self.file_transfer_states[client_ip][file_name]["retransmission_queue"].remove(chunk_id)
+
+                            # Update progress based on acknowledged chunks, not just sent
+                            # This will be updated when CHUNK_ACK is received
+                            
+                            # Implement flow control: wait for ACK or a short delay
+                            time.sleep(0.01) # Small delay to prevent overwhelming the client
+                            
                         except (ConnectionResetError, OSError, BrokenPipeError, socket.timeout) as e:
                             print(f"Socket error during chunk send to {client_ip}: {e}")
                             cancelled = True
                             break
+                        except Exception as e:
+                            print(f"Error sending chunk {chunk_id} for {file_name} to {client_ip}: {e}")
+                            # Add back to retransmission queue if not already there
+                            if chunk_id not in self.file_transfer_states[client_ip][file_name]["retransmission_queue"]:
+                                self.file_transfer_states[client_ip][file_name]["retransmission_queue"].append(chunk_id)
+                            time.sleep(0.1) # Longer delay on error
+                            continue
 
-                if cancelled:
-                    print(f"Transfer of {file_name} to {client_ip} cancelled.")
-                    self.status_update_received.emit(file_name, client_ip, "Cancelled")
-                    self.status_update.emit(f"Cancelled transfer of {file_name} to {client_ip}", "red")
-                else:
-                    print(f"Finished sending {file_name} to {client_ip}")
-                    # Ensure final 100% update is emitted
-                    self.file_progress.emit(file_name, client_ip, 100)
-                    # File sent successfully, awaiting ACK
-                    self.status_update_received.emit(file_name, client_ip, "Sent - Awaiting ACK")
-                    self.status_update.emit(f"Sent {file_name} to {client_ip}, awaiting ACK", "lightblue")
+                    if cancelled:
+                        print(f"Transfer of {file_name} to {client_ip} cancelled.")
+                        self.status_update_received.emit(file_name, client_ip, "Cancelled")
+                        self.status_update.emit(f"Cancelled transfer of {file_name} to {client_ip}", "red")
+                    else:
+                        print(f"Finished sending {file_name} to {client_ip}")
+                        # Ensure final 100% update is emitted
+                        self.file_progress.emit(file_name, client_ip, 100)
+                        # File sent successfully, awaiting final FILE_ACK
+                        self.status_update_received.emit(file_name, client_ip, "Sent - Awaiting Final ACK")
+                        self.status_update.emit(f"Sent {file_name} to {client_ip}, awaiting final ACK", "lightblue")
 
             except ConnectionResetError:
                 print(f"Client {client_ip} disconnected during transfer of {file_name}.")
@@ -614,12 +692,14 @@ class NetworkServer(QObject):
                 self.status_update.emit(f"Socket error during {file_name} to {client_ip}", "red")
                 self._disconnect_client(client_ip)
                 break
-            except Exception:
-                print(f"Unexpected error sending {file_name} to {client_ip}; marking as not sent.")
+            except Exception as e:
+                print(f"Unexpected error sending {file_name} to {client_ip}: {e}; marking as not sent.")
                 self.status_update_received.emit(file_name, client_ip, "Not Sent (Unexpected Error)")
                 self.status_update.emit(f"Error sending {file_name} to {client_ip}", "red")
             finally:
                 client_data["current_file_transfer"] = None # Reset for next file
+                if client_ip in self.file_transfer_states and file_name in self.file_transfer_states[client_ip]:
+                    del self.file_transfer_states[client_ip][file_name] # Clean up state
 
     # Discovery Server for advertising presence
     def start_discovery_server(self):

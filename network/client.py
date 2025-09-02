@@ -17,6 +17,7 @@ from .protocol import get_local_ip, get_adaptive_timeouts
 from collections import defaultdict
 import struct
 import hashlib
+import base64
 
 # Define chunk size for file transfers - will be adaptive based on network topology
 CHUNK_SIZE = 131072  # Default 128KB chunks, will be overridden by adaptive sizing
@@ -56,6 +57,7 @@ class NetworkClient(QObject):
             os.makedirs(p, exist_ok=True)
         # Track reconnect attempts to avoid duplicates
         self._reconnect_in_progress = set()
+        self.file_transfer_states = defaultdict(lambda: defaultdict(dict)) # {server_ip: {file_name: {received_bytes, total_bytes, chunks_received}}}
 
     def _get_local_ip(self):
         """Get the most appropriate local IP address for LAN communication"""
@@ -316,6 +318,7 @@ class NetworkClient(QObject):
         elif msg_type == "FILE_METADATA":
             file_name = message.get("file_name")
             file_size = message.get("file_size")
+            total_chunks = message.get("total_chunks")
 
             # Allow duplicates - create unique filename if needed
             base_name, ext = os.path.splitext(file_name)
@@ -335,8 +338,19 @@ class NetworkClient(QObject):
             current_file_transfer["received_bytes"] = 0
             current_file_transfer["file_path"] = temp_path
             current_file_transfer["file_handle"] = open(temp_path, 'wb')
+            current_file_transfer["total_chunks"] = total_chunks
+            current_file_transfer["received_chunks"] = set() # Track received chunk IDs
             
-            print(f"Receiving file metadata: {file_name} ({file_size} bytes) from {server_ip}")
+            # Initialize file transfer state for this file
+            self.file_transfer_states[server_ip][file_name] = {
+                "received_bytes": 0,
+                "total_bytes": file_size,
+                "received_chunks": set(),
+                "total_chunks": total_chunks,
+                "file_path": temp_path
+            }
+
+            print(f"Receiving file metadata: {file_name} ({file_size} bytes, {total_chunks} chunks) from {server_ip}")
             self.file_received.emit({
                 "name": file_name, 
                 "size": file_size, 
@@ -344,6 +358,19 @@ class NetworkClient(QObject):
                 "path": current_file_transfer["file_path"]
             })
             self.status_update.emit(f"Receiving {file_name} from {server_ip}", "orange")
+        elif msg_type == "FILE_CHUNK":
+            file_name = message.get("file_name")
+            chunk_id = message.get("chunk_id")
+            chunk_data_b64 = message.get("chunk_data")
+            
+            if current_file_transfer.get("receiving_file") and \
+               current_file_transfer.get("file_name") == file_name:
+                
+                chunk_data = base64.b64decode(chunk_data_b64)
+                self._receive_file_chunk(server_ip, chunk_data, current_file_transfer, chunk_id)
+            else:
+                print(f"Received unexpected FILE_CHUNK for {file_name} (chunk {chunk_id}) from {server_ip} without active transfer.")
+                self._send_chunk_ack(server_ip, file_name, chunk_id, "Error: No active transfer")
         elif msg_type == "CANCEL_TRANSFER":
             file_name = message.get("file_name")
             # If we are currently receiving this file, close it and mark cancelled
@@ -355,6 +382,8 @@ class NetworkClient(QObject):
                 except Exception:
                     pass
                 current_file_transfer.clear()
+                if server_ip in self.file_transfer_states and file_name in self.file_transfer_states[server_ip]:
+                    del self.file_transfer_states[server_ip][file_name]
             self.status_update_received.emit(file_name, server_ip, "Cancelled by Server")
             self.status_update.emit(f"Transfer of {file_name} cancelled by server {server_ip}", "red")
         elif msg_type == "HEARTBEAT":
@@ -363,27 +392,39 @@ class NetworkClient(QObject):
         else:
             print(f"Unknown message type from {server_ip}: {message}")
 
-    def _receive_file_chunk(self, server_ip, chunk_data, current_file_transfer):
+    def _receive_file_chunk(self, server_ip, chunk_data, current_file_transfer, chunk_id):
         if not current_file_transfer.get("receiving_file"):
             print(f"Received unexpected file chunk from {server_ip} without metadata.")
+            self._send_chunk_ack(server_ip, current_file_transfer.get("file_name", "Unknown"), chunk_id, "Error: No active transfer")
             return
 
         file_handle = current_file_transfer["file_handle"]
         file_name = current_file_transfer["file_name"]
         file_size = current_file_transfer["file_size"]
+        total_chunks = current_file_transfer["total_chunks"]
 
-        file_handle.write(chunk_data)
-        current_file_transfer["received_bytes"] += len(chunk_data)
+        # Only write if chunk hasn't been received before
+        if chunk_id not in current_file_transfer["received_chunks"]:
+            file_handle.write(chunk_data)
+            current_file_transfer["received_bytes"] += len(chunk_data)
+            current_file_transfer["received_chunks"].add(chunk_id)
+            
+            # Update global transfer state
+            self.file_transfer_states[server_ip][file_name]["received_bytes"] = current_file_transfer["received_bytes"]
+            self.file_transfer_states[server_ip][file_name]["received_chunks"].add(chunk_id)
 
         percentage = int((current_file_transfer["received_bytes"] / file_size) * 100)
         self.file_progress.emit(file_name, server_ip, percentage)
+        
+        # Send ACK for the received chunk
+        self._send_chunk_ack(server_ip, file_name, chunk_id, "Received")
 
-        if current_file_transfer["received_bytes"] >= file_size:
+        if len(current_file_transfer["received_chunks"]) == total_chunks:
             try:
                 file_handle.close()
                 print(f"Finished receiving {file_name} from {server_ip}")
                 
-                # Send ACK immediately after file completion
+                # Send final file ACK
                 self._send_file_ack(server_ip, file_name, "Received")
                 self._send_status_update(server_ip, file_name, "Received")
                 
@@ -402,6 +443,25 @@ class NetworkClient(QObject):
                 self.status_update_received.emit(file_name, server_ip, "Error")
             finally:
                 current_file_transfer.clear() # Reset for next file
+                if server_ip in self.file_transfer_states and file_name in self.file_transfer_states[server_ip]:
+                    del self.file_transfer_states[server_ip][file_name]
+
+    def _send_chunk_ack(self, server_ip, file_name, chunk_id, status):
+        if server_ip not in self.connected_servers:
+            print(f"Server {server_ip} not in connected_servers, cannot send CHUNK_ACK")
+            return
+
+        ack_message = {
+            "type": "CHUNK_ACK",
+            "file_name": file_name,
+            "chunk_id": chunk_id,
+            "status": status
+        }
+        try:
+            self.connected_servers[server_ip]["socket"].sendall(json.dumps(ack_message).encode('utf-8') + b'\n')
+            # print(f"Sent CHUNK_ACK for {file_name} chunk {chunk_id} to {server_ip} with status: {status}")
+        except Exception as e:
+            print(f"Error sending CHUNK_ACK for {file_name} chunk {chunk_id} to {server_ip}: {e}")
 
     def _send_file_ack(self, server_ip, file_name, status):
         if server_ip not in self.connected_servers:
