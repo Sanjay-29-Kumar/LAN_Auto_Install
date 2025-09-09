@@ -58,7 +58,7 @@ class NetworkServer(QObject):
     status_update_received = pyqtSignal(str, str, str) # Emits (file_name, client_ip, status_message)
     status_update = pyqtSignal(str, str) # Emits (message, color)
     server_ip_updated = pyqtSignal(str) # Emits the server's IP address
-    scan_status_update = pyqtSignal(str, str, str) # Emits (file_name, status, color)
+    scan_status_update = pyqtSignal(str, int, str, str) # Emits (file_name, progress, status, color)
 
     def __init__(self, host='0.0.0.0', port=protocol.COMMAND_PORT, discovery_port=protocol.DISCOVERY_PORT):
         super().__init__()

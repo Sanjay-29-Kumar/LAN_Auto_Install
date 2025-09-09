@@ -17,6 +17,9 @@ class ServerController:
         self.scanning_files = set()  # Track files being scanned
         self.scanner = None  # Will be initialized when needed
         self.load_user_preferences()
+        
+        # Connect scan status updates
+        self.network_server.scan_status_update.connect(self.update_scan_status)
         self.network_server.start_server() # Start the server network operations
 
     def load_user_preferences(self):
@@ -94,6 +97,29 @@ class ServerController:
                 pass
         else:
             QMessageBox.warning(self.ui, "Invalid IP", "Please enter a valid IP address.")
+            
+    def update_scan_status(self, file_name, progress, status, color):
+        """Update the virus scan status in the UI"""
+        if hasattr(self.ui, 'virus_scan_widget'):
+            self.ui.virus_scan_widget.update_scan_status(file_name, progress, status, color)
+            
+            # If scan is complete (progress = 100), show detailed results
+            if progress == 100:
+                if "safe" in status.lower():
+                    self.ui.virus_scan_widget.show_scan_results(
+                        f"✓ {file_name} is safe to distribute\n{status}", 
+                        True
+                    )
+                elif "unsafe" in status.lower():
+                    self.ui.virus_scan_widget.show_scan_results(
+                        f"⚠ {file_name} may be unsafe\n{status}",
+                        False
+                    )
+                else:
+                    self.ui.virus_scan_widget.show_scan_results(
+                        f"ℹ {status}",
+                        True
+                    )
 
     def show_server_details(self):
         server_ip = self.network_server.get_server_ip()

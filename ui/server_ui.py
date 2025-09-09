@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5.QtGui import *
 from .custom_widgets import FileTransferWidget
+from .virus_scan_widget import VirusScanWidget
 from string import Template
 
 def get_local_ip():
@@ -48,6 +49,10 @@ FG_MUTED = "#9ca3af"  # gray-400
 
 # Virus scan status colors
 SCAN_PENDING = "#6b7280"   # gray-500
+SCAN_PROGRESS = "#3b82f6"  # blue-500
+SCAN_SAFE = "#22c55e"     # green-500
+SCAN_UNSAFE = "#ef4444"    # red-500
+SCAN_WARNING = "#eab308"   # yellow-500
 SCAN_SCANNING = "#3b82f6"  # blue-500
 SCAN_SAFE = "#22c55e"     # green-500
 SCAN_UNSAFE = "#ef4444"   # red-500
@@ -171,6 +176,10 @@ class ServerWindow(QMainWindow):
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(12)
+        
+        # Add virus scan widget
+        self.virus_scan_widget = VirusScanWidget()
+        layout.addWidget(self.virus_scan_widget)
 
         # Top: server info + connection status
         top_row = QHBoxLayout()
