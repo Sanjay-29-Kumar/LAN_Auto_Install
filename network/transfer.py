@@ -43,13 +43,23 @@ class FileSender(threading.Thread):
 
     def _send_file(self):
         file_size = os.path.getsize(self.file_path)
-        total_chunks = (file_size + protocol.CHUNK_SIZE - 1) // protocol.CHUNK_SIZE
+        
+        # Select chunk size based on file size
+        if file_size < 100 * 1024 * 1024:  # < 100MB
+            chunk_size = protocol.CHUNK_SIZE_SMALL
+        elif file_size < 1024 * 1024 * 1024:  # < 1GB
+            chunk_size = protocol.CHUNK_SIZE_MEDIUM
+        else:  # >= 1GB
+            chunk_size = protocol.CHUNK_SIZE_LARGE
+            
+        total_chunks = (file_size + chunk_size - 1) // chunk_size
 
         header = {
             'type': protocol.MSG_TYPE_FILE_HEADER,
             'file_name': self.file_info['name'],
             'file_size': file_size,
             'total_chunks': total_chunks,
+            'chunk_size': chunk_size,
             'category': self.file_info.get('category', 'other')
         }
         self._send_message(header)
@@ -65,7 +75,7 @@ class FileSender(threading.Thread):
                     self._send_message({'type': protocol.MSG_TYPE_CANCEL_TRANSFER})
                     break
                 
-                chunk_data = f.read(protocol.CHUNK_SIZE)
+                chunk_data = f.read(header['chunk_size'])
                 chunk_message = {
                     'type': protocol.MSG_TYPE_FILE_CHUNK,
                     'chunk_index': i,
@@ -74,8 +84,9 @@ class FileSender(threading.Thread):
                 self._send_message(chunk_message, chunk_data)
                 self.unacked_chunks.add(i)
 
-                # Simple sliding window mechanism
-                if len(self.unacked_chunks) >= 5:
+                # Adaptive sliding window based on file size
+                window_size = 3 if file_size < 100 * 1024 * 1024 else (5 if file_size < 1024 * 1024 * 1024 else 8)
+                if len(self.unacked_chunks) >= window_size:
                     self._wait_for_acks()
 
                 if self.progress_callback:
@@ -179,7 +190,15 @@ class FileReceiver(threading.Thread):
         file_name = header['file_name']
         file_size = header['file_size']
         self.total_chunks = header['total_chunks']
+        self.chunk_size = header.get('chunk_size', protocol.CHUNK_SIZE_SMALL)
         category = header.get('category', 'other')
+        
+        # Set socket buffer size based on chunk size and network type
+        if self.sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF) < self.chunk_size * 2:
+            try:
+                self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, self.chunk_size * 2)
+            except Exception as e:
+                print(f"Could not set socket buffer size: {e}")
 
         # Create categorized storage directory
         if category == 'installer':
@@ -204,8 +223,14 @@ class FileReceiver(threading.Thread):
         
         while len(self.received_chunks) < self.total_chunks and self.running:
             try:
-                self.sock.settimeout(protocol.ACK_TIMEOUT * 2) # Longer timeout for receiving data
-                message_data = self._receive_message_and_data(protocol.CHUNK_SIZE + 1024) # Buffer for message + chunk
+                # Adjust timeout based on chunk size and network conditions
+                base_timeout = protocol.ACK_TIMEOUT * 2
+                if self.chunk_size > protocol.CHUNK_SIZE_MEDIUM:
+                    base_timeout *= 2  # Double timeout for large chunks
+                self.sock.settimeout(base_timeout)
+                
+                # Use chunk size as the base for receive buffer
+                message_data = self._receive_message_and_data(self.chunk_size + 1024)  # Buffer for message + chunk
                 if not message_data:
                     print("Connection lost while receiving file.")
                     break

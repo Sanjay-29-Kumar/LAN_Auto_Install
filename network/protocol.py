@@ -41,12 +41,17 @@ MSG_TYPE_CANCEL_TRANSFER = 'cancel_transfer'
 # Sent by the client to provide a status update on a received file.
 MSG_TYPE_STATUS_UPDATE = 'status_update'
 
-# Adaptive buffer sizes based on network topology
-CROSS_MACHINE_BUFFER_SIZE = 2 * 1024 * 1024  # 2MB for cross-machine
-SAME_MACHINE_BUFFER_SIZE = 1024 * 1024  # 1MB for same-machine
+# Adaptive buffer sizes based on network topology and file size
+CROSS_MACHINE_BUFFER_SIZE = 8 * 1024 * 1024  # 8MB for cross-machine
+SAME_MACHINE_BUFFER_SIZE = 4 * 1024 * 1024  # 4MB for same-machine
 
 # Standard buffer size for receiving data (fallback)
-BUFFER_SIZE = 4096
+BUFFER_SIZE = 1024 * 1024  # 1MB default buffer
+
+# Chunk sizes for different file sizes
+CHUNK_SIZE_SMALL = 1024 * 1024  # 1MB for files < 100MB
+CHUNK_SIZE_MEDIUM = 4 * 1024 * 1024  # 4MB for files between 100MB and 1GB
+CHUNK_SIZE_LARGE = 8 * 1024 * 1024  # 8MB for files > 1GB
 
 # Adaptive chunk sizes based on network topology
 CROSS_MACHINE_CHUNK_SIZE = 2 * 1024 * 1024  # 2MB for cross-machine
