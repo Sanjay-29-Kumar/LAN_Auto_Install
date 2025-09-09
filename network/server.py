@@ -92,21 +92,44 @@ class NetworkServer(QObject):
             self.running = False
 
     def stop_server(self):
+        """Stop the server and clean up all resources"""
         if not self.running:
             return
 
+        print("Stopping server...")
         self.running = False
+        
+        # Stop discovery server first
         self.stop_discovery_server()
-        for client_ip in list(self.clients.keys()):
-            self._disconnect_client(client_ip)
+        
+        # Disconnect all clients with proper cleanup
+        client_ips = list(self.clients.keys())  # Create a copy since we'll be modifying self.clients
+        for client_ip in client_ips:
+            try:
+                self._disconnect_client(client_ip, is_shutdown=True)
+            except Exception as e:
+                print(f"Error disconnecting client {client_ip}: {e}")
+        
+        # Close main server socket
         if self.server_socket:
             try:
-                self.server_socket.shutdown(socket.SHUT_RDWR)
+                try:
+                    self.server_socket.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass  # Socket might already be shutdown
                 self.server_socket.close()
-            except OSError as e:
+            except Exception as e:
                 print(f"Error closing server socket: {e}")
-        print("Server stopped.")
-        self.status_update.emit("Server stopped", "red")
+        
+        # Clear all remaining data
+        self.clients.clear()
+        self.file_transfer_states.clear()
+        
+        print("Server stopped")
+        try:
+            self.status_update.emit("Server stopped", "red")
+        except RuntimeError:
+            pass  # Qt might already be shut down
 
     def _accept_connections(self):
         while self.running:
@@ -120,12 +143,32 @@ class NetworkServer(QObject):
                 client_socket.settimeout(120)  # Longer timeout for file operations
                 client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
                 client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                # Enable TCP keepalive with more aggressive settings
+                if hasattr(socket, 'TCP_KEEPIDLE'):  # Linux
+                    client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30)
+                if hasattr(socket, 'TCP_KEEPINTVL'):
+                    client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 5)
+                if hasattr(socket, 'TCP_KEEPCNT'):
+                    client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 5)
+                
                 # Increase socket buffer sizes for better performance
                 try:
                     client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1048576)  # 1MB receive buffer
                     client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1048576)  # 1MB send buffer
                 except Exception:
                     pass  # Some systems may not support these options
+                    
+                # Check if this is a reconnecting client
+                existing_client = self.clients.get(client_ip)
+                if existing_client and existing_client.get("reconnect_pending"):
+                    print(f"Client {client_ip} is reconnecting")
+                    # Update socket and clear reconnection flag
+                    existing_client["socket"] = client_socket
+                    existing_client["reconnect_pending"] = False
+                    # Resume any pending transfers
+                    if existing_client.get("current_file_transfer"):
+                        self.status_update.emit(f"Resuming transfers for {client_ip}", "green")
+                        threading.Thread(target=self._process_file_queue, args=(client_ip,), daemon=True).start()
                 
                 # Wait for client information
                 try:
@@ -219,6 +262,8 @@ class NetworkServer(QObject):
     def _handle_client(self, client_socket, client_ip):
         buffer = b""
         last_activity = time.time()
+        reconnect_attempts = 0
+        max_reconnect_attempts = 5
         
         while self.running:
             try:
@@ -228,18 +273,40 @@ class NetworkServer(QObject):
                     data = client_socket.recv(CHUNK_SIZE)
                     if data:
                         last_activity = time.time()
+                        reconnect_attempts = 0  # Reset attempts on successful data
                     else:
-                        # Client disconnected gracefully
-                        break
+                        # Empty data might mean graceful disconnect or temporary issue
+                        # Wait a bit before considering it a disconnect
+                        time.sleep(1)
+                        try:
+                            # Try to send a ping to check connection
+                            client_socket.sendall(b'ping\n')
+                            continue
+                        except:
+                            if reconnect_attempts < max_reconnect_attempts:
+                                print(f"Connection issue with {client_ip}, attempting to maintain...")
+                                reconnect_attempts += 1
+                                time.sleep(2)  # Wait before retry
+                                continue
+                            else:
+                                print(f"Client {client_ip} disconnected after {max_reconnect_attempts} attempts")
+                                break
                 except socket.timeout:
-                    # Check for client timeout (no activity for too long)
-                    if time.time() - last_activity > 300:  # 5 minutes timeout
-                        print(f"Client {client_ip} timed out due to inactivity")
+                    # Only timeout after extended period of no activity
+                    if time.time() - last_activity > 600:  # 10 minutes timeout
+                        print(f"Client {client_ip} timed out due to extended inactivity")
                         break
                     continue  # Continue waiting for data
                 except (ConnectionResetError, OSError) as e:
-                    print(f"Client {client_ip} connection error: {e}")
-                    break
+                    # Don't immediately disconnect on connection errors
+                    if reconnect_attempts < max_reconnect_attempts:
+                        print(f"Connection issue with {client_ip}: {e}, attempting to maintain...")
+                        reconnect_attempts += 1
+                        time.sleep(2)  # Wait before retry
+                        continue
+                    else:
+                        print(f"Client {client_ip} disconnected after {max_reconnect_attempts} attempts")
+                        break
 
                 buffer += data
 
@@ -463,40 +530,80 @@ class NetworkServer(QObject):
             self.cancel_file_transfer(client_ip, file_name)
         self.status_update.emit("Selected transfers cancelled.", "red")
 
-    def _disconnect_client(self, client_ip):
-        if client_ip in self.clients:
-            client_data = self.clients[client_ip]
-            client_socket = client_data["socket"]
+    def _disconnect_client(self, client_ip, is_shutdown=False, is_temporary=False):
+        """
+        Safely disconnect a client and clean up resources
+        :param client_ip: IP of client to disconnect
+        :param is_shutdown: True if server is shutting down
+        :param is_temporary: True if this is a temporary disconnection
+        """
+        if client_ip not in self.clients:
+            return
             
-            # Cancel any ongoing file transfers
-            if "cancel_event" in client_data:
+        client_data = self.clients[client_ip]
+        client_socket = client_data.get("socket")
+        
+        # For temporary disconnections, preserve client data for reconnection
+        if is_temporary:
+            print(f"Temporary disconnection for client {client_ip}")
+            # Just close the socket but keep the client data
+            if client_socket:
+                try:
+                    client_socket.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                try:
+                    client_socket.close()
+                except Exception:
+                    pass
+            client_data["socket"] = None
+            client_data["reconnect_pending"] = True
+            self.status_update.emit(f"Client {client_ip} temporarily disconnected", "orange")
+            return
+        
+        # For permanent disconnections or shutdown
+        if "cancel_event" in client_data:
+            try:
                 client_data["cancel_event"].set()
-            
-            # Mark current transfer as cancelled if exists
-            current_transfer = client_data.get("current_file_transfer")
-            if current_transfer:
+            except Exception:
+                pass
+        
+        # Handle current transfer
+        current_transfer = client_data.get("current_file_transfer")
+        if current_transfer:
+            try:
                 file_name = current_transfer.get("file_name", "Unknown")
-                self.status_update_received.emit(file_name, client_ip, "Cancelled")
-                self.status_update.emit(f"Transfer cancelled due to disconnection: {file_name}", "red")
-            
-            # Clear pending transfers
+                if not is_shutdown:
+                    self.status_update_received.emit(file_name, client_ip, "Paused")
+                    self.status_update.emit(f"Transfer paused: {file_name}", "orange")
+            except Exception:
+                pass
+        
+        # Don't clear pending transfers unless it's a shutdown
+        if is_shutdown:
             client_data["files_to_send"].clear()
-            
+        
+        # Close socket safely
+        if client_socket:
             try:
                 client_socket.shutdown(socket.SHUT_RDWR)
-                client_socket.close()
-            except OSError as e:
-                print(f"Error closing socket for {client_ip}: {e}")
-            
-            del self.clients[client_ip]
-            
-            try:
-                self.client_disconnected.emit(client_ip)
-                self.status_update.emit(f"Client {client_ip} disconnected", "red")
-            except RuntimeError:
-                # QObject may already be deleted during shutdown
+            except OSError:
                 pass
-            print(f"Disconnected client {client_ip}.")
+            try:
+                client_socket.close()
+            except Exception:
+                pass
+        
+        # Clean up client data only on permanent disconnect or shutdown
+        if not is_temporary:
+            try:
+                del self.clients[client_ip]
+                if not is_shutdown:
+                    self.client_disconnected.emit(client_ip)
+                    self.status_update.emit(f"Client {client_ip} disconnected", "red")
+            except Exception as e:
+                print(f"Error cleaning up client data for {client_ip}: {e}")
+            print(f"Disconnected client {client_ip}")
 
     def send_file(self, client_ip, file_path):
         if client_ip not in self.clients:

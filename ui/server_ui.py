@@ -37,12 +37,20 @@ def get_local_ip():
 
 PRIMARY = "#3b82f6"   # blue-500
 ACCENT = "#22c55e"    # green-500
+WARNING = "#eab308"   # yellow-500
+DANGER = "#ef4444"    # red-500
 BG0 = "#0b1220"       # near-slate-900
 BG1 = "#0f172a"       # slate-900
 BG2 = "#111827"       # gray-900
 BORDER = "#374151"    # gray-700
 FG = "#e5e7eb"        # gray-200
 FG_MUTED = "#9ca3af"  # gray-400
+
+# Virus scan status colors
+SCAN_PENDING = "#6b7280"   # gray-500
+SCAN_SCANNING = "#3b82f6"  # blue-500
+SCAN_SAFE = "#22c55e"     # green-500
+SCAN_UNSAFE = "#ef4444"   # red-500
 
 
 class PillLabel(QLabel):

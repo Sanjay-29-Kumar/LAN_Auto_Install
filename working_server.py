@@ -14,6 +14,8 @@ class ServerController:
         self.ui = ui
         self.transfer_widgets = {}
         self.pending_transfers = set()
+        self.scanning_files = set()  # Track files being scanned
+        self.scanner = None  # Will be initialized when needed
         self.load_user_preferences()
         self.network_server.start_server() # Start the server network operations
 
