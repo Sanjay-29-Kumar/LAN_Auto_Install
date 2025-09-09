@@ -41,12 +41,49 @@ MSG_TYPE_CANCEL_TRANSFER = 'cancel_transfer'
 # Sent by the client to provide a status update on a received file.
 MSG_TYPE_STATUS_UPDATE = 'status_update'
 
-# Adaptive buffer sizes based on network topology and file size
-CROSS_MACHINE_BUFFER_SIZE = 8 * 1024 * 1024  # 8MB for cross-machine
-SAME_MACHINE_BUFFER_SIZE = 4 * 1024 * 1024  # 4MB for same-machine
+# LAN optimization constants for massive scale
+MAX_CONCURRENT_CLIENTS = 0   # 0 means unlimited clients
+MAX_CONCURRENT_TRANSFERS = 0  # 0 means unlimited concurrent transfers
+QUEUE_SIZE_PER_CLIENT = 1000 # Support large number of queued files
 
-# Standard buffer size for receiving data (fallback)
-BUFFER_SIZE = 1024 * 1024  # 1MB default buffer
+# Network buffer sizes for massive files (optimized for 25GB+)
+LAN_BUFFER_SMALL = 32 * 1024 * 1024      # 32MB for files < 1GB
+LAN_BUFFER_MEDIUM = 64 * 1024 * 1024     # 64MB for files 1GB-10GB
+LAN_BUFFER_LARGE = 128 * 1024 * 1024     # 128MB for files > 10GB
+LAN_BUFFER_MASSIVE = 256 * 1024 * 1024   # 256MB for files > 25GB
+
+# Chunk sizes optimized for massive file transfer
+CHUNK_SIZE_SMALL = 32 * 1024 * 1024      # 32MB chunks < 1GB files
+CHUNK_SIZE_MEDIUM = 64 * 1024 * 1024     # 64MB chunks 1GB-10GB files
+CHUNK_SIZE_LARGE = 128 * 1024 * 1024     # 128MB chunks 10GB-25GB files
+CHUNK_SIZE_MASSIVE = 256 * 1024 * 1024   # 256MB chunks > 25GB files
+
+# Multicast configuration for efficient distribution
+MULTICAST_GROUP = '239.255.0.1'
+MULTICAST_PORT = 5005
+MULTICAST_TTL = 32  # Hop limit for multicast packets
+
+# Advanced network performance settings
+MAX_WINDOW_SIZE = 32       # Increased window size for better throughput
+MIN_WINDOW_SIZE = 8        # Higher minimum for better baseline performance
+WINDOW_SCALE_FACTOR = 2    # Dynamic window scaling
+
+# Rate limiting with dynamic adjustment
+BASE_RATE_LIMIT = 10 * 1024 * 1024 * 1024  # 10GB/s base rate for LAN
+MAX_CLIENT_RATE = 1024 * 1024 * 1024       # 1GB/s max per client
+MIN_CLIENT_RATE = 50 * 1024 * 1024         # 50MB/s min guaranteed
+RATE_ADJUST_INTERVAL = 5                    # Adjust rates every 5 seconds
+
+# Enhanced timeout settings for large files
+CHUNK_TIMEOUT = 120        # 2 minutes for large chunks
+SESSION_TIMEOUT = 7200     # 2 hours for long sessions
+RETRY_ATTEMPTS = 5         # Number of retry attempts
+RETRY_DELAY = 5           # Seconds between retries
+
+# Memory management
+MAX_MEMORY_BUFFER = 1024 * 1024 * 1024  # 1GB max memory buffer
+BUFFER_FLUSH_THRESHOLD = 0.8  # Flush at 80% capacity
+STREAM_THRESHOLD = 10 * 1024 * 1024 * 1024  # Stream mode for files > 10GB
 
 # Chunk sizes for different file sizes
 CHUNK_SIZE_SMALL = 1024 * 1024  # 1MB for files < 100MB
@@ -151,7 +188,7 @@ def get_adaptive_timeouts(local_ip, remote_ip):
             'ack': CROSS_MACHINE_ACK_TIMEOUT,
             'heartbeat': CROSS_MACHINE_HEARTBEAT_INTERVAL,
             'chunk_size': CROSS_MACHINE_CHUNK_SIZE,
-            'buffer_size': CROSS_MACHINE_BUFFER_SIZE
+            'buffer_size': LAN_BUFFER_MASSIVE  # Use massive buffer for optimal LAN performance
         }
     else:
         return {
@@ -161,5 +198,5 @@ def get_adaptive_timeouts(local_ip, remote_ip):
             'ack': SAME_MACHINE_ACK_TIMEOUT,
             'heartbeat': SAME_MACHINE_HEARTBEAT_INTERVAL,
             'chunk_size': SAME_MACHINE_CHUNK_SIZE,
-            'buffer_size': SAME_MACHINE_BUFFER_SIZE
+            'buffer_size': LAN_BUFFER_LARGE  # Use large buffer for local transfers
         }
