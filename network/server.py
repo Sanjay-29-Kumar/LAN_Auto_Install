@@ -10,8 +10,14 @@ from PyQt5.QtCore import QObject, pyqtSignal, QTimer
 from collections import defaultdict
 
 # Define chunk size for file transfers - increased for better performance
-CHUNK_SIZE = 65536  # 64KB chunks for better throughput
+CHUNK_SIZE = 1048576  # 1MB chunks for better throughput
+MAX_MEMORY_BUFFER = 104857600  # 100MB max memory buffer
 RECEIVED_FILES_DIR = "received_files" # For client, not server
+
+# Constants for connection management
+RECONNECT_TIMEOUT = 300  # 5 minutes to allow for reconnection
+MAX_RETRIES = 5  # Maximum number of retry attempts
+RETRY_DELAY = 2  # Seconds between retries
 
 from . import protocol
 
@@ -439,6 +445,9 @@ class NetworkServer(QObject):
                 self.status_update.emit(f"File not found: {path}", "red")
 
     def distribute_files_to_clients(self, client_ips=None):
+        """
+        Distribute files to multiple clients concurrently
+        """
         if not self.files_to_distribute:
             self.status_update.emit("No files selected for distribution.", "orange")
             return
@@ -448,18 +457,28 @@ class NetworkServer(QObject):
             return
 
         target_clients = client_ips if client_ips is not None else list(self.clients.keys())
+        active_clients = [ip for ip in target_clients if ip in self.clients]
 
+        if not active_clients:
+            self.status_update.emit("No active clients to distribute files to.", "orange")
+            return
+
+        # Initialize distribution tracking
         for file_info in self.files_to_distribute:
-            for client_ip in target_clients:
+            for client_ip in active_clients:
                 if client_ip in self.clients:
+                    # Queue file for each client
                     self.send_file(client_ip, file_info["path"])
-                    # Wait for ACK before sending to the next client
-                    file_name = file_info["name"]
-                    while not self.file_transfer_states.get(client_ip, {}).get(file_name, {}).get("completed", False):
-                        time.sleep(0.1)  # Check every 0.1 seconds
-                else:
-                    self.status_update.emit(f"Client {client_ip} not connected, cannot distribute files.", "red")
-        self.status_update.emit(f"Initiated file distribution to {len(target_clients)} clients.", "green")
+
+        # Start a monitoring thread for overall progress
+        threading.Thread(target=self._monitor_distribution_progress, 
+                       args=(self.files_to_distribute, active_clients),
+                       daemon=True).start()
+        
+        self.status_update.emit(
+            f"Started distribution of {len(self.files_to_distribute)} files to {len(active_clients)} clients.", 
+            "green"
+        )
 
     def connect_to_client_manual(self, ip_address):
         # This method is a placeholder. In a real scenario, the server doesn't "connect" to a client manually
@@ -529,6 +548,56 @@ class NetworkServer(QObject):
         for file_name, client_ip in transfers_to_cancel:
             self.cancel_file_transfer(client_ip, file_name)
         self.status_update.emit("Selected transfers cancelled.", "red")
+
+    def _monitor_distribution_progress(self, files_to_distribute, target_clients):
+        """Monitor the progress of file distribution to multiple clients"""
+        start_time = time.time()
+        total_files = len(files_to_distribute)
+        total_clients = len(target_clients)
+        total_transfers = total_files * total_clients
+
+        while True:
+            completed_transfers = 0
+            active_transfers = False
+
+            # Check each file for each client
+            for file_info in files_to_distribute:
+                file_name = file_info["name"]
+                for client_ip in target_clients:
+                    if client_ip not in self.clients:
+                        continue
+
+                    transfer_state = self.file_transfer_states.get(client_ip, {}).get(file_name, {})
+                    if transfer_state.get("completed", False):
+                        completed_transfers += 1
+                    elif transfer_state.get("sent_bytes", 0) > 0:
+                        active_transfers = True
+
+            # Calculate overall progress
+            progress = (completed_transfers / total_transfers) * 100 if total_transfers > 0 else 0
+            elapsed_time = time.time() - start_time
+
+            # Update status
+            if completed_transfers == total_transfers:
+                self.status_update.emit(
+                    f"Distribution completed: {completed_transfers}/{total_transfers} transfers", 
+                    "green"
+                )
+                break
+            elif active_transfers:
+                self.status_update.emit(
+                    f"Distribution in progress: {completed_transfers}/{total_transfers} transfers ({progress:.1f}%)", 
+                    "blue"
+                )
+            else:
+                if elapsed_time > RECONNECT_TIMEOUT:
+                    self.status_update.emit(
+                        f"Distribution timeout: {completed_transfers}/{total_transfers} transfers completed", 
+                        "red"
+                    )
+                    break
+
+            time.sleep(1)  # Update every second
 
     def _disconnect_client(self, client_ip, is_shutdown=False, is_temporary=False):
         """
@@ -675,23 +744,45 @@ class NetworkServer(QObject):
                 with open(file_path, 'rb') as f:
                     f.seek(sent_bytes) # Resume from where it left off if needed
                     cancelled = False
+                    buffer_size = 0
+                    last_progress_update = time.time()
+                    
                     while sent_bytes < file_size and self.running:
                         if client_data["cancel_event"].is_set():
                             cancelled = True
                             break
-                        chunk = f.read(CHUNK_SIZE)
+                            
+                        # Determine chunk size based on remaining buffer space
+                        remaining_buffer = MAX_MEMORY_BUFFER - buffer_size
+                        current_chunk_size = min(CHUNK_SIZE, remaining_buffer)
+                        
+                        chunk = f.read(current_chunk_size)
                         if not chunk:
                             break
+                            
                         try:
                             client_data["socket"].sendall(chunk)
-                            sent_bytes += len(chunk)
-                            percentage = int((sent_bytes / file_size) * 100)
-                            self.file_progress.emit(file_name, client_ip, percentage)
-                            self.file_transfer_states[client_ip][file_name]["sent_bytes"] = sent_bytes
-                            self.file_transfer_states[client_ip][file_name]["total_bytes"] = file_size
-                            # Small delay to prevent overwhelming the network
-                            if sent_bytes % (CHUNK_SIZE * 10) == 0:  # Every 10 chunks
-                                time.sleep(0.001)  # 1ms delay
+                            chunk_size = len(chunk)
+                            sent_bytes += chunk_size
+                            buffer_size += chunk_size
+                            
+                            # Update progress every 0.5 seconds to reduce UI load
+                            current_time = time.time()
+                            if current_time - last_progress_update >= 0.5:
+                                percentage = int((sent_bytes / file_size) * 100)
+                                self.file_progress.emit(file_name, client_ip, percentage)
+                                last_progress_update = current_time
+                            
+                            self.file_transfer_states[client_ip][file_name].update({
+                                "sent_bytes": sent_bytes,
+                                "total_bytes": file_size,
+                                "last_activity": time.time()
+                            })
+                            
+                            # Memory management: if buffer is full, wait for network to catch up
+                            if buffer_size >= MAX_MEMORY_BUFFER * 0.8:  # 80% full
+                                time.sleep(0.1)  # Brief pause to allow network to catch up
+                                buffer_size = 0  # Reset buffer tracking
                         except (ConnectionResetError, OSError, BrokenPipeError, socket.timeout) as e:
                             print(f"Socket error during chunk send to {client_ip}: {e}")
                             cancelled = True
