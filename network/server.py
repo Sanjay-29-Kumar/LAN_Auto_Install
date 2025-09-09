@@ -8,6 +8,7 @@ import time
 import platform
 from PyQt5.QtCore import QObject, pyqtSignal, QTimer
 from collections import defaultdict
+from utils.virus_scanner import VirusScanner
 
 # Define chunk size for file transfers - increased for better performance
 CHUNK_SIZE = 1048576  # 1MB chunks for better throughput
@@ -57,6 +58,7 @@ class NetworkServer(QObject):
     status_update_received = pyqtSignal(str, str, str) # Emits (file_name, client_ip, status_message)
     status_update = pyqtSignal(str, str) # Emits (message, color)
     server_ip_updated = pyqtSignal(str) # Emits the server's IP address
+    scan_status_update = pyqtSignal(str, str, str) # Emits (file_name, status, color)
 
     def __init__(self, host='0.0.0.0', port=protocol.COMMAND_PORT, discovery_port=protocol.DISCOVERY_PORT):
         super().__init__()
@@ -72,6 +74,8 @@ class NetworkServer(QObject):
         self.files_to_distribute = [] # List of files selected by the user for distribution
         self.server_ip = None # To store the server's actual IP
         self.host = host
+        self.virus_scanner = VirusScanner()
+        self.scan_results = {}  # Cache for scan results
 
     def start_server(self):
         if self.running:
@@ -432,17 +436,71 @@ class NetworkServer(QObject):
         return [client_data["info"] for client_data in self.clients.values()]
 
     def add_files_for_distribution(self, file_paths):
-        for path in file_paths:
-            if os.path.exists(path):
-                file_info = {
-                    "path": path,
-                    "name": os.path.basename(path),
-                    "size": os.path.getsize(path)
-                }
-                self.files_to_distribute.append(file_info)
-                self.status_update.emit(f"Added {file_info['name']} for distribution", "blue")
-            else:
-                self.status_update.emit(f"File not found: {path}", "red")
+        """Add files to distribution queue with virus scanning"""
+        try:
+            for path in file_paths:
+                if not os.path.exists(path):
+                    self.status_update.emit(f"File not found: {path}", "red")
+                    continue
+                    
+                try:
+                    file_name = os.path.basename(path)
+                    self.status_update.emit(f"Processing {file_name}...", "blue")
+                    
+                    # Add file to distribution queue immediately
+                    file_info = {
+                        "path": path,
+                        "name": file_name,
+                        "size": os.path.getsize(path),
+                        "scan_result": "pending",
+                        "scan_details": "Scan in progress"
+                    }
+                    self.files_to_distribute.append(file_info)
+                    self.status_update.emit(f"Added {file_name} to queue", "blue")
+                    
+                    # Start virus scan in background thread
+                    def scan_file_background():
+                        try:
+                            def scan_callback(message, color):
+                                try:
+                                    self.scan_status_update.emit(file_name, message, color)
+                                except Exception as e:
+                                    print(f"Error in scan callback: {e}")
+                            
+                            # Start virus scan
+                            is_safe, details = self.virus_scanner.scan_file(path, callback=scan_callback)
+                            
+                            # Update file info with scan results
+                            file_info["scan_result"] = "safe" if is_safe else "unsafe"
+                            file_info["scan_details"] = details
+                            
+                            if is_safe:
+                                self.scan_status_update.emit(file_name, "Safe - Ready for distribution", "green")
+                            else:
+                                self.scan_status_update.emit(
+                                    file_name,
+                                    f"Warning: File may be unsafe - {details if isinstance(details, str) else 'See scan report'}",
+                                    "red"
+                                )
+                                # Remove file from distribution queue if unsafe
+                                self.files_to_distribute.remove(file_info)
+                                self.status_update.emit(f"Removed unsafe file: {file_name}", "red")
+                                
+                        except Exception as e:
+                            print(f"Error in background scan for {file_name}: {e}")
+                            self.status_update.emit(f"Error scanning {file_name}: {str(e)}", "red")
+                    
+                    # Start background scan thread
+                    threading.Thread(target=scan_file_background, daemon=True).start()
+                    
+                except Exception as e:
+                    print(f"Error processing file {path}: {e}")
+                    self.status_update.emit(f"Error processing file: {str(e)}", "red")
+                    continue
+                    
+        except Exception as e:
+            print(f"Error in add_files_for_distribution: {e}")
+            self.status_update.emit(f"Error adding files: {str(e)}", "red")
 
     def distribute_files_to_clients(self, client_ips=None):
         """
@@ -728,7 +786,9 @@ class NetworkServer(QObject):
                 metadata = {
                     "type": "FILE_METADATA",
                     "file_name": file_name,
-                    "file_size": file_size
+                    "file_size": file_size,
+                    "scan_result": file_info.get("scan_result", "not_scanned"),
+                    "scan_details": file_info.get("scan_details", "File not scanned")
                 }
                 client_data["socket"].sendall(json.dumps(metadata).encode('utf-8') + b'\n')
                 self.status_update.emit(f"Sending metadata for {file_name} to {client_ip}", "orange")
