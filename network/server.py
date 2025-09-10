@@ -468,23 +468,35 @@ class NetworkServer(QObject):
                                     print(f"Error in scan callback: {e}")
                             
                             # Start virus scan
-                            is_safe, details = self.virus_scanner.scan_file(path, callback=scan_callback)
+                            is_safe, scan_details = self.virus_scanner.scan_file(path)
                             
                             # Update file info with scan results
                             file_info["scan_result"] = "safe" if is_safe else "unsafe"
-                            file_info["scan_details"] = details
+                            file_info["scan_details"] = scan_details
                             
                             if is_safe:
                                 self.scan_status_update.emit(file_name, "Safe - Ready for distribution", "green")
                             else:
-                                self.scan_status_update.emit(
-                                    file_name,
-                                    f"Warning: File may be unsafe - {details if isinstance(details, str) else 'See scan report'}",
+                                # Get detailed stats if available
+                                if isinstance(scan_details, dict) and 'stats' in scan_details:
+                                    stats = scan_details['stats']
+                                    unsafe_msg = (
+                                        f"⚠️ File unsafe: {stats['malicious']} malicious, "
+                                        f"{stats['suspicious']} suspicious detections\n"
+                                        f"See details: {scan_details.get('permalink', '')}"
+                                    )
+                                else:
+                                    unsafe_msg = "Warning: File may be unsafe - See scan report"
+                                
+                                self.scan_status_update.emit(file_name, unsafe_msg, "red")
+                                
+                                # Remove file from distribution queue and notify
+                                self.files_to_distribute.remove(file_info)
+                                self.status_update.emit(
+                                    f"❌ Blocked unsafe file: {file_name}\n"
+                                    f"The file has been removed from distribution queue.", 
                                     "red"
                                 )
-                                # Remove file from distribution queue if unsafe
-                                self.files_to_distribute.remove(file_info)
-                                self.status_update.emit(f"Removed unsafe file: {file_name}", "red")
                                 
                         except Exception as e:
                             print(f"Error in background scan for {file_name}: {e}")

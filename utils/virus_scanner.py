@@ -17,12 +17,14 @@ class VirusScanner(QObject):
         super().__init__()
         self.api_key = api_key
         self.headers = {
-            'apikey': self.api_key
+            'x-apikey': self.api_key
         }
-        self.base_url = 'https://www.virustotal.com/vtapi/v2'
+        self.base_url = 'https://www.virustotal.com/api/v3'
         self.scan_cache = {}  # Cache scan results
         self.error_count = 0
         self.max_errors = 3
+        self.max_retries = 3
+        self.retry_delay = 60  # seconds
 
     def _calculate_file_hash(self, file_path):
         """Calculate SHA-256 hash of file"""
@@ -41,12 +43,23 @@ class VirusScanner(QObject):
         return None
 
     def _upload_file(self, file_path):
-        """Upload file to VirusTotal"""
+        """Upload file to VirusTotal with retries"""
         upload_url = f"{self.base_url}/files"
-        with open(file_path, 'rb') as file:
-            files = {'file': file}
-            response = requests.post(upload_url, headers=self.headers, files=files)
-            return response.json()
+        file_name = os.path.basename(file_path)
+        
+        for attempt in range(self.max_retries):
+            try:
+                with open(file_path, 'rb') as file:
+                    files = {'file': (file_name, file)}
+                    response = requests.post(upload_url, headers=self.headers, files=files)
+                    response.raise_for_status()
+                    return response.json()
+            except requests.exceptions.RequestException as e:
+                if attempt < self.max_retries - 1:
+                    self.scan_progress.emit(file_name, 50, f"Upload retry {attempt + 1}/{self.max_retries}...")
+                    time.sleep(self.retry_delay)
+                else:
+                    raise Exception(f"Upload failed after {self.max_retries} attempts: {str(e)}")
 
     def scan_file(self, file_path):
         """
@@ -194,21 +207,36 @@ class VirusScanner(QObject):
         file_name = os.path.basename(file_path)
         self.scan_started.emit(file_name)
 
+        # Basic file validation
+        file_size = os.path.getsize(file_path)
+        if file_size > 650 * 1024 * 1024:  # VT limit is 650MB
+            msg = f"File too large for scanning ({file_size/(1024*1024):.1f} MB > 650 MB)"
+            self.scan_complete.emit(file_name, False, msg)
+            return False, msg
+
         # Calculate file hash
-        file_hash = self._calculate_file_hash(file_path)
-        
+        try:
+            self.scan_progress.emit(file_name, 10, "Calculating file hash...")
+            file_hash = self._calculate_file_hash(file_path)
+        except Exception as e:
+            msg = f"Hash calculation failed: {str(e)}"
+            self.scan_complete.emit(file_name, False, msg)
+            return False, msg
+
         # Check cache first
+        self.scan_progress.emit(file_name, 20, "Checking cache...")
         cached_result = self._check_cached_result(file_hash)
         if cached_result:
+            self.scan_progress.emit(file_name, 100, "Retrieved from cache")
             self.scan_complete.emit(file_name, cached_result[0], cached_result[1])
             return cached_result
 
         try:
-            # First check if the file has been scanned before
-            self.scan_progress.emit(file_name, 25, "Checking file status...")
+            # Check if file was previously analyzed
+            self.scan_progress.emit(file_name, 25, "Checking file analysis history...")
             try:
                 result = self._get_scan_results(file_hash)
-                if 'data' in result:
+                if result and 'data' in result:
                     analysis = result['data']['attributes']['last_analysis_stats']
                 else:
                     # File needs to be uploaded
@@ -225,11 +253,33 @@ class VirusScanner(QObject):
             self.scan_progress.emit(file_name, 90, "Analyzing results...")
             malicious = analysis.get('malicious', 0)
             suspicious = analysis.get('suspicious', 0)
+            harmless = analysis.get('harmless', 0)
+            undetected = analysis.get('undetected', 0)
             total = sum(analysis.values())
 
+            # Consider file unsafe if it has any malicious or suspicious detections
             is_safe = malicious == 0 and suspicious == 0
-            details = f"Scan complete: {malicious} malicious, {suspicious} suspicious out of {total} scans"
+            
+            # Prepare detailed results
+            details = {
+                'status': 'unsafe' if not is_safe else 'safe',
+                'stats': {
+                    'malicious': malicious,
+                    'suspicious': suspicious,
+                    'harmless': harmless,
+                    'undetected': undetected,
+                    'total': total
+                },
+                'scan_id': result['data'].get('id', ''),
+                'permalink': f"https://www.virustotal.com/gui/file/{file_hash}",
+                'scan_date': result['data']['attributes'].get('last_analysis_date', '')
+            }
 
+            # Create user-friendly summary
+            summary = f"Scan complete: {malicious} malicious, {suspicious} suspicious, {harmless} harmless, {undetected} undetected"
+            if not is_safe:
+                summary += "\nFile has been marked as potentially unsafe!"
+            
             # Cache the result
             self.scan_cache[file_hash] = (time.time(), (is_safe, details))
             

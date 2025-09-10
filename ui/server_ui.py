@@ -48,6 +48,87 @@ FG = "#e5e7eb"        # gray-200
 FG_MUTED = "#9ca3af"  # gray-400
 
 # Virus scan status colors
+SCAN_PENDING = "#eab308"  # yellow-500
+SCAN_SAFE = "#22c55e"     # green-500
+SCAN_UNSAFE = "#ef4444"   # red-500
+
+class PendingScansList(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.initUI()
+        
+    def initUI(self):
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(5)
+        
+        # Header
+        header = QLabel("Pending Security Scans")
+        header.setStyleSheet(f"color: {FG}; font-weight: bold;")
+        layout.addWidget(header)
+        
+        # Scrollable list
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setStyleSheet(f"""
+            QScrollArea {{
+                border: 1px solid {BORDER};
+                border-radius: 5px;
+                background: {BG2};
+            }}
+        """)
+        
+        self.scan_list = QWidget()
+        self.scan_list_layout = QVBoxLayout()
+        self.scan_list_layout.setAlignment(Qt.AlignTop)
+        self.scan_list.setLayout(self.scan_list_layout)
+        
+        self.scroll_area.setWidget(self.scan_list)
+        layout.addWidget(self.scroll_area)
+        
+        self.setLayout(layout)
+        
+    def add_pending_scan(self, file_name):
+        scan_item = QWidget()
+        item_layout = QHBoxLayout()
+        
+        # Spinner icon (you can replace with an actual spinner)
+        spinner = QLabel("⌛")
+        item_layout.addWidget(spinner)
+        
+        # File name
+        name_label = QLabel(file_name)
+        name_label.setStyleSheet(f"color: {FG_MUTED}")
+        item_layout.addWidget(name_label)
+        
+        # Status
+        status = QLabel("Scanning...")
+        status.setStyleSheet(f"color: {SCAN_PENDING}")
+        item_layout.addWidget(status)
+        
+        item_layout.addStretch()
+        scan_item.setLayout(item_layout)
+        
+        self.scan_list_layout.addWidget(scan_item)
+        return scan_item
+        
+    def update_scan_status(self, widget, status, is_safe=None):
+        if is_safe is not None:
+            status_color = SCAN_SAFE if is_safe else SCAN_UNSAFE
+            spinner = widget.layout().itemAt(0).widget()
+            spinner.setText("✓" if is_safe else "⚠️")
+        else:
+            status_color = SCAN_PENDING
+            
+        status_label = widget.layout().itemAt(2).widget()
+        status_label.setText(status)
+        status_label.setStyleSheet(f"color: {status_color}")
+        
+    def clear(self):
+        while self.scan_list_layout.count():
+            item = self.scan_list_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
 SCAN_PENDING = "#6b7280"   # gray-500
 SCAN_PROGRESS = "#3b82f6"  # blue-500
 SCAN_SAFE = "#22c55e"     # green-500
@@ -263,10 +344,68 @@ class ServerWindow(QMainWindow):
         clients_group.layout().addLayout(actions_row)
         layout.addWidget(clients_group, 5)
 
-        # File Selection
-        file_group = self.create_card_group("File Selection")
+        # File Selection and Security
+        file_group = self.create_card_group("File Selection & Security")
+        
+        # File selection row
         file_row = QHBoxLayout()
         self.select_files_button = QPushButton("Select Files to Share")
+        
+        # Add security scan section
+        security_layout = QVBoxLayout()
+        
+        # Security scan header with status
+        scan_header = QHBoxLayout()
+        scan_header.setSpacing(10)
+        
+        security_icon = QLabel("🛡️")
+        security_icon.setStyleSheet(f"font-size: 16px;")
+        scan_header.addWidget(security_icon)
+        
+        security_title = QLabel("Security Status")
+        security_title.setStyleSheet(f"color: {FG}; font-weight: bold;")
+        scan_header.addWidget(security_title)
+        
+        self.overall_status = QLabel("No files selected")
+        self.overall_status.setStyleSheet(f"color: {FG_MUTED}")
+        scan_header.addWidget(self.overall_status)
+        
+        scan_header.addStretch()
+        
+        # Add a "View Details" button
+        self.view_scan_details = QPushButton("View Scan Details")
+        self.view_scan_details.setStyleSheet(f"""
+            QPushButton {{
+                color: {PRIMARY};
+                border: 1px solid {PRIMARY};
+                padding: 5px 10px;
+                border-radius: 5px;
+                background: transparent;
+            }}
+            QPushButton:hover {{
+                background: {PRIMARY}20;
+            }}
+        """)
+        scan_header.addWidget(self.view_scan_details)
+        
+        security_layout.addLayout(scan_header)
+        
+        # Pending scans list
+        self.pending_scans = PendingScansList()
+        security_layout.addWidget(self.pending_scans)
+        
+        # Share controls with safety check
+        share_controls = QHBoxLayout()
+        self.safety_check = QCheckBox("I confirm all files have been scanned and are safe")
+        self.safety_check.setStyleSheet(f"color: {FG}")
+        self.safety_check.setEnabled(False)
+        share_controls.addWidget(self.safety_check)
+        
+        self.share_button = QPushButton("Share Files")
+        self.share_button.setEnabled(False)
+        share_controls.addWidget(self.share_button)
+        
+        security_layout.addLayout(share_controls)
         self.select_files_button.clicked.connect(self._select_files_clicked)
         file_row.addStretch(1)
         file_row.addWidget(self.select_files_button)

@@ -1,5 +1,10 @@
-from ui.server_ui import ServerWindow
-from PyQt5.QtWidgets import QApplication, QMainWindow, QMessageBox, QFileDialog, QListWidgetItem
+from ui.server_ui import (
+    ServerWindow, FG_MUTED, SCAN_PENDING, SCAN_SAFE, SCAN_UNSAFE
+)
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QMessageBox, QFileDialog, QListWidgetItem,
+    QDialog, QVBoxLayout, QPushButton
+)
 from PyQt5.QtCore import Qt, QTimer, QSize
 from PyQt5.QtGui import QColor
 from network.server import NetworkServer
@@ -15,8 +20,15 @@ class ServerController:
         self.transfer_widgets = {}
         self.pending_transfers = set()
         self.scanning_files = set()  # Track files being scanned
+        self.scan_items = {}  # Track scan items in UI
+        self.safe_files = set()  # Track which files are confirmed safe
         self.scanner = None  # Will be initialized when needed
         self.load_user_preferences()
+        
+        # Connect security-related signals
+        if hasattr(ui, 'safety_check'):
+            ui.safety_check.toggled.connect(self._update_share_button)
+            ui.view_scan_details.clicked.connect(self._show_scan_details)
         
         # Connect scan status updates
         self.network_server.scan_status_update.connect(self.update_scan_status)
@@ -100,10 +112,46 @@ class ServerController:
             
     def update_scan_status(self, file_name, progress, status, color):
         """Update the virus scan status in the UI"""
+        # Update the pending scans list
+        if progress == 0:  # New scan started
+            scan_item = self.ui.pending_scans.add_pending_scan(file_name)
+            self.scan_items[file_name] = scan_item
+        elif file_name in self.scan_items:
+            is_safe = None
+            if progress == 100:
+                if "safe" in status.lower():
+                    is_safe = True
+                    self.safe_files.add(file_name)
+                elif "unsafe" in status.lower():
+                    is_safe = False
+                    if file_name in self.safe_files:
+                        self.safe_files.remove(file_name)
+                
+                # Update overall status
+                total_files = len(self.scan_items)
+                safe_files = len(self.safe_files)
+                
+                if total_files == 0:
+                    self.ui.overall_status.setText("No files selected")
+                    self.ui.overall_status.setStyleSheet(f"color: {FG_MUTED}")
+                elif safe_files == total_files:
+                    self.ui.overall_status.setText("✓ All files scanned and safe")
+                    self.ui.overall_status.setStyleSheet(f"color: {SCAN_SAFE}")
+                    self.ui.safety_check.setEnabled(True)
+                else:
+                    unsafe = total_files - safe_files
+                    self.ui.overall_status.setText(f"⚠️ {unsafe} files need attention")
+                    self.ui.overall_status.setStyleSheet(f"color: {SCAN_UNSAFE}")
+                    self.ui.safety_check.setEnabled(False)
+                    self.ui.safety_check.setChecked(False)
+            
+            self.ui.pending_scans.update_scan_status(self.scan_items[file_name], status, is_safe)
+        
+        # Update detailed scan widget if visible
         if hasattr(self.ui, 'virus_scan_widget'):
             self.ui.virus_scan_widget.update_scan_status(file_name, progress, status, color)
             
-            # If scan is complete (progress = 100), show detailed results
+            # If scan is complete, show detailed results
             if progress == 100:
                 if "safe" in status.lower():
                     self.ui.virus_scan_widget.show_scan_results(
@@ -146,6 +194,29 @@ class ServerController:
             <b>Files Sent:</b> {client_info.get('files_sent', 0)}
             """
             QMessageBox.information(self.ui, "Client Profile", profile_text)
+            
+    def _update_share_button(self, checked):
+        """Enable/disable share button based on safety check"""
+        if hasattr(self.ui, 'share_button'):
+            self.ui.share_button.setEnabled(checked)
+            
+    def _show_scan_details(self):
+        """Show the detailed virus scan results dialog"""
+        if hasattr(self.ui, 'virus_scan_widget'):
+            dialog = QDialog(self.ui)
+            dialog.setWindowTitle("Security Scan Details")
+            layout = QVBoxLayout()
+            
+            # Add the virus scan widget
+            layout.addWidget(self.ui.virus_scan_widget)
+            
+            # Add close button
+            close_btn = QPushButton("Close")
+            close_btn.clicked.connect(dialog.close)
+            layout.addWidget(close_btn)
+            
+            dialog.setLayout(layout)
+            dialog.exec_()
 
     def update_client_list(self, *args):
         self.ui.client_list_widget.clear()
