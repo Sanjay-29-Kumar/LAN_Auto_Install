@@ -258,8 +258,9 @@ class ServerWindow(QMainWindow):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(12)
         
-        # Add virus scan widget
+        # Add virus scan widget (hidden by default, shown when needed)
         self.virus_scan_widget = VirusScanWidget()
+        self.virus_scan_widget.setVisible(False)
         layout.addWidget(self.virus_scan_widget)
 
         # Top: server info + connection status
@@ -411,6 +412,7 @@ class ServerWindow(QMainWindow):
         file_row.addWidget(self.select_files_button)
         file_row.addStretch(1)
         file_group.layout().addLayout(file_row)
+        file_group.layout().addLayout(security_layout)
         layout.addWidget(file_group, 2)
 
         return widget
@@ -448,20 +450,89 @@ class ServerWindow(QMainWindow):
         self.remove_selected_files_button.clicked.connect(self._remove_selected_files_clicked)
         self.select_all_files_button = QPushButton("Select All")
         self.select_all_files_button.clicked.connect(self._select_all_files_clicked)
-        self.send_files_button = QPushButton("Send to Selected Clients")
-        self.send_files_button.clicked.connect(self._send_files_clicked)
-        self.send_to_all_button = QPushButton("Send to All Clients")
-        self.send_to_all_button.clicked.connect(self._send_to_all_clicked)
         actions.addWidget(self.add_more_files_button)
         actions.addWidget(self.remove_selected_files_button)
         actions.addStretch(1)
         actions.addWidget(self.select_all_files_button)
-        actions.addWidget(self.send_files_button)
-        actions.addWidget(self.send_to_all_button)
         selected_vbox.addLayout(actions)
 
         selected_group.layout().addLayout(selected_vbox)
         layout.addWidget(selected_group)
+
+        # Security Scanning Section
+        security_group = self.create_card_group("Security Scan")
+        security_layout = QVBoxLayout()
+        
+        # Security scan header with status
+        scan_header = QHBoxLayout()
+        scan_header.setSpacing(10)
+        
+        security_icon = QLabel("🛡️")
+        security_icon.setStyleSheet(f"font-size: 16px;")
+        scan_header.addWidget(security_icon)
+        
+        security_title = QLabel("Security Status")
+        security_title.setStyleSheet(f"color: {FG}; font-weight: bold;")
+        scan_header.addWidget(security_title)
+        
+        self.overall_status = QLabel("Files not scanned yet")
+        self.overall_status.setStyleSheet(f"color: {FG_MUTED}")
+        scan_header.addWidget(self.overall_status)
+        
+        scan_header.addStretch()
+        
+        # Scan Files button
+        self.scan_files_button = QPushButton("🔍 Scan Files for Security")
+        self.scan_files_button.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {WARNING};
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 8px 16px;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{
+                background-color: {WARNING}dd;
+            }}
+        """)
+        scan_header.addWidget(self.scan_files_button)
+        
+        security_layout.addLayout(scan_header)
+        
+        # Pending scans list
+        self.pending_scans = PendingScansList()
+        security_layout.addWidget(self.pending_scans)
+        
+        # Virus scan widget for detailed progress
+        self.virus_scan_widget = VirusScanWidget()
+        self.virus_scan_widget.setVisible(False)
+        security_layout.addWidget(self.virus_scan_widget)
+        
+        # Share controls with safety check
+        share_controls = QHBoxLayout()
+        self.safety_check = QCheckBox("I confirm all files have been scanned and are safe")
+        self.safety_check.setStyleSheet(f"color: {FG}")
+        self.safety_check.setEnabled(False)
+        share_controls.addWidget(self.safety_check)
+        
+        share_controls.addStretch()
+        
+        # Send buttons
+        self.send_files_button = QPushButton("Send to Selected Clients")
+        self.send_files_button.clicked.connect(self._send_files_clicked)
+        self.send_files_button.setEnabled(False)
+        share_controls.addWidget(self.send_files_button)
+        
+        self.send_to_all_button = QPushButton("Send to All Clients")
+        self.send_to_all_button.clicked.connect(self._send_to_all_clicked)
+        self.send_to_all_button.setEnabled(False)
+        share_controls.addWidget(self.send_to_all_button)
+        
+        security_layout.addLayout(share_controls)
+        
+        security_group.layout().addLayout(security_layout)
+        layout.addWidget(security_group)
 
         return widget
 

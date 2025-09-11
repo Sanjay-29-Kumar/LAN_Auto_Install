@@ -436,7 +436,7 @@ class NetworkServer(QObject):
         return [client_data["info"] for client_data in self.clients.values()]
 
     def add_files_for_distribution(self, file_paths):
-        """Add files to distribution queue with virus scanning"""
+        """Add files to distribution queue without automatic scanning"""
         try:
             for path in file_paths:
                 if not os.path.exists(path):
@@ -445,65 +445,17 @@ class NetworkServer(QObject):
                     
                 try:
                     file_name = os.path.basename(path)
-                    self.status_update.emit(f"Processing {file_name}...", "blue")
+                    self.status_update.emit(f"Added {file_name} to queue", "blue")
                     
-                    # Add file to distribution queue immediately
+                    # Add file to distribution queue
                     file_info = {
                         "path": path,
                         "name": file_name,
                         "size": os.path.getsize(path),
-                        "scan_result": "pending",
-                        "scan_details": "Scan in progress"
+                        "scan_result": "not_scanned",
+                        "scan_details": "Not scanned yet"
                     }
                     self.files_to_distribute.append(file_info)
-                    self.status_update.emit(f"Added {file_name} to queue", "blue")
-                    
-                    # Start virus scan in background thread
-                    def scan_file_background():
-                        try:
-                            def scan_callback(message, color):
-                                try:
-                                    self.scan_status_update.emit(file_name, message, color)
-                                except Exception as e:
-                                    print(f"Error in scan callback: {e}")
-                            
-                            # Start virus scan
-                            is_safe, scan_details = self.virus_scanner.scan_file(path)
-                            
-                            # Update file info with scan results
-                            file_info["scan_result"] = "safe" if is_safe else "unsafe"
-                            file_info["scan_details"] = scan_details
-                            
-                            if is_safe:
-                                self.scan_status_update.emit(file_name, "Safe - Ready for distribution", "green")
-                            else:
-                                # Get detailed stats if available
-                                if isinstance(scan_details, dict) and 'stats' in scan_details:
-                                    stats = scan_details['stats']
-                                    unsafe_msg = (
-                                        f"⚠️ File unsafe: {stats['malicious']} malicious, "
-                                        f"{stats['suspicious']} suspicious detections\n"
-                                        f"See details: {scan_details.get('permalink', '')}"
-                                    )
-                                else:
-                                    unsafe_msg = "Warning: File may be unsafe - See scan report"
-                                
-                                self.scan_status_update.emit(file_name, unsafe_msg, "red")
-                                
-                                # Remove file from distribution queue and notify
-                                self.files_to_distribute.remove(file_info)
-                                self.status_update.emit(
-                                    f"❌ Blocked unsafe file: {file_name}\n"
-                                    f"The file has been removed from distribution queue.", 
-                                    "red"
-                                )
-                                
-                        except Exception as e:
-                            print(f"Error in background scan for {file_name}: {e}")
-                            self.status_update.emit(f"Error scanning {file_name}: {str(e)}", "red")
-                    
-                    # Start background scan thread
-                    threading.Thread(target=scan_file_background, daemon=True).start()
                     
                 except Exception as e:
                     print(f"Error processing file {path}: {e}")
