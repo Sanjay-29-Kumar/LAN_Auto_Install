@@ -308,14 +308,15 @@ class ServerWindow(QMainWindow):
         clients_vbox.setSpacing(8)
 
         self.client_list_widget = QListWidget()
-        self.client_list_widget.setViewMode(QListView.ListMode)  # Changed to ListMode for better text display
-        self.client_list_widget.setResizeMode(QListView.Adjust)
+        self.client_list_widget.setViewMode(QListView.ListMode)
+        self.client_list_widget.setResizeMode(QListView.Fixed)  # Changed to Fixed mode for more stable sizing
         self.client_list_widget.setMovement(QListView.Static)
         self.client_list_widget.setSpacing(8)
-        self.client_list_widget.setWordWrap(False)  # prevent multi-line wrap
+        self.client_list_widget.setWordWrap(False)
         self.client_list_widget.setUniformItemSizes(True)
         self.client_list_widget.setSelectionMode(QAbstractItemView.NoSelection)
-        self.client_list_widget.setMinimumWidth(600)  # Ensure minimum width for full text display
+        self.client_list_widget.setMinimumWidth(650)  # Increased minimum width
+        self.client_list_widget.setFrameShape(QFrame.NoFrame)  # Remove border
         clients_vbox.addWidget(self.client_list_widget)
 
         # Manual connect and actions row

@@ -1,3 +1,7 @@
+"""
+Custom widgets for the LAN Auto Install application.
+"""
+
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar,
     QCheckBox, QPushButton, QSizePolicy
@@ -16,79 +20,7 @@ class ProfileListItemWidget(QWidget):
         self.show_checkbox = show_checkbox
         self._status_text = ""
         self._scan_text = ""
-        self.status_label = QLabel()
-        self.scan_label = QLabel()
-        self.scan_icon = QLabel()
-        self.scan_progress = QProgressBar()
         self.init_ui()
-        
-    def set_status(self, status, color=None):
-        """Update the transfer status text and color"""
-        self._status_text = status or ""
-        # Display full status text without eliding
-        self.status_label.setText(self._status_text)
-        self.status_label.setToolTip(self._status_text)  # Add tooltip for very long status
-        
-        # Apply color with existing styling
-        base_style = """
-            QLabel {
-                font-size: 11pt;
-                padding: 2px;
-            }
-        """
-        if color:
-            self.status_label.setStyleSheet(base_style + f"QLabel {{ color: {color}; }}")
-        else:
-            self.status_label.setStyleSheet(base_style + "QLabel { color: #9ca3af; }}")
-            
-    def update_scan_status(self, status, progress, is_safe=None):
-        """Update the security scan status display"""
-        self._scan_text = status
-        self.scan_label.setText(status)
-        self.scan_label.setToolTip(status)
-        self.scan_progress.setValue(progress)
-        
-        # Update scan status icon and colors
-        if is_safe is not None:
-            if is_safe:
-                self.scan_icon.setText("✓")
-                self.scan_progress.setStyleSheet("""
-                    QProgressBar {
-                        border: 2px solid #374151;
-                        border-radius: 8px;
-                        background-color: #111827;
-                        text-align: center;
-                        height: 16px;
-                        color: white;
-                        font-weight: 600;
-                    }
-                    QProgressBar::chunk {
-                        background-color: #22c55e;
-                        border-radius: 6px;
-                    }
-                """)
-                self.scan_label.setStyleSheet("QLabel { color: #22c55e; font-size: 11pt; }")
-            else:
-                self.scan_icon.setText("⚠️")
-                self.scan_progress.setStyleSheet("""
-                    QProgressBar {
-                        border: 2px solid #374151;
-                        border-radius: 8px;
-                        background-color: #111827;
-                        text-align: center;
-                        height: 16px;
-                        color: white;
-                        font-weight: 600;
-                    }
-                    QProgressBar::chunk {
-                        background-color: #dc2626;
-                        border-radius: 6px;
-                    }
-                """)
-                self.scan_label.setStyleSheet("QLabel { color: #dc2626; font-size: 11pt; }")
-        else:
-            self.scan_icon.setText("🔒")
-            self.scan_label.setStyleSheet("QLabel { color: #9ca3af; font-size: 11pt; }")
 
     def init_ui(self):
         """Initialize the UI components"""
@@ -102,11 +34,22 @@ class ProfileListItemWidget(QWidget):
         layout.setContentsMargins(16, 10, 16, 10)
         layout.setSpacing(15)
         
+        # Create a container for the checkbox to fix geometry issues
+        checkbox_container = QWidget()
+        checkbox_container.setFixedSize(42, 42)  # Large enough to contain checkbox and its indicator
+        checkbox_layout = QHBoxLayout(checkbox_container)
+        checkbox_layout.setContentsMargins(0, 0, 0, 0)
+        checkbox_layout.setSpacing(0)
+        checkbox_layout.setAlignment(Qt.AlignCenter)
+        
         # Checkbox with better sizing
         self.checkbox = QCheckBox()
         self.checkbox.setVisible(self.show_checkbox)
-        self.checkbox.setFixedSize(24, 24)
+        self.checkbox.setAttribute(Qt.WA_TranslucentBackground)  # Prevent background color issues
         self.checkbox.setStyleSheet("""
+            QCheckBox {
+                background: transparent;
+            }
             QCheckBox::indicator {
                 width: 20px;
                 height: 20px;
@@ -119,6 +62,8 @@ class ProfileListItemWidget(QWidget):
                 border-color: #3b82f6;
             }
         """)
+        
+        checkbox_layout.addWidget(self.checkbox)
 
         # Main content area with better layout
         content_widget = QWidget()
@@ -173,92 +118,12 @@ class ProfileListItemWidget(QWidget):
         """)
         
         # Layout assembly with proper stretch factors
-        layout.addWidget(self.checkbox, 0)  # Fixed size
+        layout.addWidget(checkbox_container, 0)  # Fixed size container
         layout.addWidget(content_widget, 1)  # Expandable
         layout.addWidget(self.profile_button, 0)  # Fixed size
         
         self.setLayout(layout)
-        
-        # Main horizontal layout
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(16, 10, 16, 10)
-        layout.setSpacing(15)
-        
-        # Checkbox with better sizing
-        self.checkbox = QCheckBox()
-        self.checkbox.setVisible(self.show_checkbox)  # using instance variable
-        self.checkbox.setFixedSize(24, 24)
-        self.checkbox.setStyleSheet("""
-            QCheckBox::indicator {
-                width: 20px;
-                height: 20px;
-                border-radius: 3px;
-                border: 2px solid #374151;
-                background-color: #111827;
-            }
-            QCheckBox::indicator:checked {
-                background-color: #3b82f6;
-                border-color: #3b82f6;
-            }
-        """)
 
-        # Main content area with better layout
-        content_widget = QWidget()
-        content_layout = QVBoxLayout(content_widget)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(2)
-        
-        # Parse the label text to extract components
-        hostname, ip, os_info = self._parse_server_info(self.label_text)  # using instance variable        # Primary label (hostname + IP) with better text handling
-        self.label = QLabel()
-        self.label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self.label.setMinimumWidth(320)  # Increased width for full hostname and IP display
-        
-        # Format as "Hostname IP" with proper styling and ensure no truncation
-        primary_text = f'<b style="font-size:14pt; color:#e5e7eb;">{hostname}</b> <span style="font-size:13pt; color:#22c55e;">{ip}</span>'
-        self.label.setText(primary_text)
-        self.label.setWordWrap(False)
-        self.label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        
-        # Secondary label (OS info)
-        self.secondary_label = QLabel()
-        self.secondary_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self.secondary_label.setText(f'<span style="font-size:11pt; color:#9ca3af;">{os_info}</span>')
-        self.secondary_label.setWordWrap(False)
-        self.secondary_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        
-        content_layout.addWidget(self.label)
-        content_layout.addWidget(self.secondary_label)
-        
-        # Profile button with proper sizing and text
-        self.profile_button = QPushButton("Detail")
-        self.profile_button.setToolTip("Show Details")
-        self.profile_button.setFixedSize(70, 36)  # Increased width to fit text
-        self.profile_button.setStyleSheet("""
-            QPushButton {
-                background-color: #3b82f6;
-                color: white;
-                border: none;
-                border-radius: 8px;
-                font-size: 12pt;
-                font-weight: 600;
-                padding: 2px;
-            }
-            QPushButton:hover {
-                background-color: #2563eb;
-            }
-            QPushButton:pressed {
-                background-color: #1d4ed8;
-            }
-        """)
-        
-        # Layout assembly with proper stretch factors
-        layout.addWidget(self.checkbox, 0)  # Fixed size
-        layout.addWidget(content_widget, 1)  # Expandable
-        layout.addWidget(self.profile_button, 0)  # Fixed size
-        
-        self.setLayout(layout)
-    
     def _parse_server_info(self, label_text):
         """Parse server information from label text"""
         try:
@@ -297,16 +162,6 @@ class ProfileListItemWidget(QWidget):
 
     def set_checked(self, checked):
         self.checkbox.setChecked(checked)
-"""
-Custom widgets for the LAN Auto Install application.
-"""
-
-from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar,
-    QCheckBox, QPushButton, QSizePolicy
-)
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QFontMetrics
 
 class FileTransferWidget(QWidget):
     """
@@ -479,6 +334,55 @@ class FileTransferWidget(QWidget):
         
         # Add security scan layout
         outer.addLayout(scan_layout)
+
+    def update_scan_status(self, status, progress, is_safe=None):
+        """Update the security scan status display"""
+        self._scan_text = status
+        self.scan_label.setText(status)
+        self.scan_label.setToolTip(status)
+        self.scan_progress.setValue(progress)
+        
+        # Update scan status icon and colors
+        if is_safe is not None:
+            if is_safe:
+                self.scan_icon.setText("✓")
+                self.scan_progress.setStyleSheet("""
+                    QProgressBar {
+                        border: 2px solid #374151;
+                        border-radius: 8px;
+                        background-color: #111827;
+                        text-align: center;
+                        height: 16px;
+                        color: white;
+                        font-weight: 600;
+                    }
+                    QProgressBar::chunk {
+                        background-color: #22c55e;
+                        border-radius: 6px;
+                    }
+                """)
+                self.scan_label.setStyleSheet("QLabel { color: #22c55e; font-size: 11pt; }")
+            else:
+                self.scan_icon.setText("⚠️")
+                self.scan_progress.setStyleSheet("""
+                    QProgressBar {
+                        border: 2px solid #374151;
+                        border-radius: 8px;
+                        background-color: #111827;
+                        text-align: center;
+                        height: 16px;
+                        color: white;
+                        font-weight: 600;
+                    }
+                    QProgressBar::chunk {
+                        background-color: #dc2626;
+                        border-radius: 6px;
+                    }
+                """)
+                self.scan_label.setStyleSheet("QLabel { color: #dc2626; font-size: 11pt; }")
+        else:
+            self.scan_icon.setText("🔒")
+            self.scan_label.setStyleSheet("QLabel { color: #9ca3af; font-size: 11pt; }")
 
     def resizeEvent(self, event):
         # Elide long texts to prevent overlap

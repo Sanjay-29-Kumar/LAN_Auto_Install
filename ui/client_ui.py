@@ -179,14 +179,15 @@ class ClientWindow(QMainWindow):
 
         # QListWidget configured to look like a grid of device cards
         self.server_list_widget = QListWidget()
-        self.server_list_widget.setViewMode(QListView.ListMode)  # Changed to ListMode for better text display
-        self.server_list_widget.setResizeMode(QListView.Adjust)
+        self.server_list_widget.setViewMode(QListView.ListMode)
+        self.server_list_widget.setResizeMode(QListView.Fixed)  # Changed to Fixed mode for more stable sizing
         self.server_list_widget.setMovement(QListView.Static)
         self.server_list_widget.setSpacing(8)
-        self.server_list_widget.setWordWrap(False)  # prevent multi-line wrap
+        self.server_list_widget.setWordWrap(False)
         self.server_list_widget.setUniformItemSizes(True)
         self.server_list_widget.setSelectionMode(QAbstractItemView.NoSelection)
-        self.server_list_widget.setMinimumWidth(600)  # Ensure minimum width for full text display
+        self.server_list_widget.setMinimumWidth(650)  # Increased minimum width
+        self.server_list_widget.setFrameShape(QFrame.NoFrame)  # Remove border
         devices_vbox.addWidget(self.server_list_widget)
 
         # Actions row
