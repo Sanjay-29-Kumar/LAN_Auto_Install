@@ -52,28 +52,6 @@ class SecurityStatusWidget(QWidget):
         
         layout.addLayout(header)
         
-        # Progress section
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setFormat("%p%")
-        self.progress_bar.setStyleSheet("""
-            QProgressBar {
-                border: 2px solid #374151;
-                border-radius: 8px;
-                background-color: #111827;
-                text-align: center;
-                height: 16px;
-                color: white;
-                font-weight: 600;
-            }
-            QProgressBar::chunk {
-                background-color: #22c55e;
-                border-radius: 6px;
-            }
-        """)
-        layout.addWidget(self.progress_bar)
-        
         # Details
         self.details_label = QLabel("Checking file security...")
         self.details_label.setWordWrap(True)
@@ -82,7 +60,6 @@ class SecurityStatusWidget(QWidget):
         
     def update_status(self, progress, status, is_safe=None):
         """Update the security status display"""
-        self.progress_bar.setValue(progress)
         self.details_label.setText(status)
         
         if is_safe is not None:
@@ -95,21 +72,6 @@ class SecurityStatusWidget(QWidget):
                     padding: 3px 12px;
                     font-weight: bold;
                     font-size: 12px;
-                """)
-                self.progress_bar.setStyleSheet("""
-                    QProgressBar {
-                        border: 2px solid #374151;
-                        border-radius: 8px;
-                        background-color: #111827;
-                        text-align: center;
-                        height: 16px;
-                        color: white;
-                        font-weight: 600;
-                    }
-                    QProgressBar::chunk {
-                        background-color: #22c55e;
-                        border-radius: 6px;
-                    }
                 """)
             else:
                 self.status_label.setText("⚠️ Unsafe")

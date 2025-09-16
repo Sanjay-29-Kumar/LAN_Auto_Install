@@ -114,11 +114,13 @@ class PendingScansList(QWidget):
         
     def update_scan_status(self, widget, status, is_safe=None):
         if is_safe is not None:
+            status = "✓ Safe" if is_safe else "⚠️ Unsafe"
             status_color = SCAN_SAFE if is_safe else SCAN_UNSAFE
             spinner = widget.layout().itemAt(0).widget()
             spinner.setText("✓" if is_safe else "⚠️")
         else:
             status_color = SCAN_PENDING
+            status = "Scanning..."
             
         status_label = widget.layout().itemAt(2).widget()
         status_label.setText(status)

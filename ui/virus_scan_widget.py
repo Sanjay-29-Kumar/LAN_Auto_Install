@@ -86,7 +86,13 @@ class VirusScanWidget(QWidget):
     def update_scan_status(self, file_name, progress, status, color="#3b82f6"):
         """Update the scan status display"""
         self.file_label.setText(f"File: {file_name}")
-        self.progress_bar.setValue(progress)
+        self.progress_bar.hide()  # Hide progress bar
+        if "safe" in status.lower():
+            status = "✓ Safe"
+            color = "#22c55e"
+        elif "unsafe" in status.lower():
+            status = "⚠️ Unsafe"
+            color = "#dc2626"
         self.status_label.setText(status)
         self.status_label.setStyleSheet(f"""
             QLabel {{

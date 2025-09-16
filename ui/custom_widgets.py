@@ -175,7 +175,7 @@ class FileTransferWidget(QWidget):
         self.client_ip = client_ip
         self._full_name_text = f"{self.file_name} ({self.file_size / 1024 / 1024:.2f} MB)"
         self._status_text = "Waiting..."
-        self._scan_text = "Pending security scan..."
+        self._scan_text = ""  # Start with empty scan text
         self._scan_progress = 0
         self._scan_status = "pending"  # pending, scanning, safe, unsafe
 
@@ -294,7 +294,7 @@ class FileTransferWidget(QWidget):
         scan_layout.setSpacing(8)
         
         # Scan status icon
-        self.scan_icon = QLabel("🔒")
+        self.scan_icon = QLabel("")  # Start with no icon
         self.scan_icon.setStyleSheet("font-size: 14px;")
         scan_layout.addWidget(self.scan_icon)
         
@@ -308,81 +308,29 @@ class FileTransferWidget(QWidget):
         """)
         scan_layout.addWidget(self.scan_label, 1)  # Give it stretch
         
-        # Scan progress bar
+        # Progress bar is hidden by default
         self.scan_progress = QProgressBar()
-        self.scan_progress.setMinimum(0)
-        self.scan_progress.setMaximum(100)
-        self.scan_progress.setValue(0)
-        self.scan_progress.setFormat("%p%")
-        self.scan_progress.setFixedWidth(150)
-        self.scan_progress.setStyleSheet("""
-            QProgressBar {
-                border: 2px solid #374151;
-                border-radius: 8px;
-                background-color: #111827;
-                text-align: center;
-                height: 16px;
-                color: white;
-                font-weight: 600;
-            }
-            QProgressBar::chunk {
-                background-color: #22c55e;
-                border-radius: 6px;
-            }
-        """)
-        scan_layout.addWidget(self.scan_progress)
+        self.scan_progress.hide()
         
         # Add security scan layout
         outer.addLayout(scan_layout)
 
     def update_scan_status(self, status, progress, is_safe=None):
         """Update the security scan status display"""
-        self._scan_text = status
-        self.scan_label.setText(status)
-        self.scan_label.setToolTip(status)
-        self.scan_progress.setValue(progress)
-        
-        # Update scan status icon and colors
         if is_safe is not None:
-            if is_safe:
-                self.scan_icon.setText("✓")
-                self.scan_progress.setStyleSheet("""
-                    QProgressBar {
-                        border: 2px solid #374151;
-                        border-radius: 8px;
-                        background-color: #111827;
-                        text-align: center;
-                        height: 16px;
-                        color: white;
-                        font-weight: 600;
-                    }
-                    QProgressBar::chunk {
-                        background-color: #22c55e;
-                        border-radius: 6px;
-                    }
-                """)
-                self.scan_label.setStyleSheet("QLabel { color: #22c55e; font-size: 11pt; }")
-            else:
-                self.scan_icon.setText("⚠️")
-                self.scan_progress.setStyleSheet("""
-                    QProgressBar {
-                        border: 2px solid #374151;
-                        border-radius: 8px;
-                        background-color: #111827;
-                        text-align: center;
-                        height: 16px;
-                        color: white;
-                        font-weight: 600;
-                    }
-                    QProgressBar::chunk {
-                        background-color: #dc2626;
-                        border-radius: 6px;
-                    }
-                """)
-                self.scan_label.setStyleSheet("QLabel { color: #dc2626; font-size: 11pt; }")
+            status = "✓ Safe" if is_safe else "⚠️ Unsafe"
+            color = "#22c55e" if is_safe else "#dc2626"
+            self.scan_icon.setText("✓" if is_safe else "⚠️")
+            self.scan_label.setStyleSheet(f"QLabel {{ color: {color}; font-size: 11pt; }}")
+            self.scan_label.show()
+            self.scan_icon.show()
+            self._scan_text = status
+            self.scan_label.setText(status)
         else:
-            self.scan_icon.setText("🔒")
-            self.scan_label.setStyleSheet("QLabel { color: #9ca3af; font-size: 11pt; }")
+            # Don't show anything while scanning
+            self.scan_label.hide()
+            self.scan_icon.hide()
+            self._scan_text = ""
 
     def resizeEvent(self, event):
         # Elide long texts to prevent overlap
