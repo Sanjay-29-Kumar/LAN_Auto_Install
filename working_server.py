@@ -502,15 +502,31 @@ class ServerController:
 
     def remove_selected_files(self):
         items_to_remove = []
+        files_to_remove = []
+        
         for i in range(self.ui.selected_files_list_widget.count()):
             item = self.ui.selected_files_list_widget.item(i)
             if item.checkState() == Qt.Checked:
                 items_to_remove.append(i)
+                # Get the file name for clearing scan data
+                if i < len(self.network_server.files_to_distribute):
+                    files_to_remove.append(self.network_server.files_to_distribute[i]['name'])
 
         # Remove in reverse order to avoid index shifting issues
         for i in sorted(items_to_remove, reverse=True):
             self.network_server.files_to_distribute.pop(i)
             self.ui.selected_files_list_widget.takeItem(i)
+            
+        # Clear scan data for removed files
+        for file_name in files_to_remove:
+            self.scanning_files.discard(file_name)
+            self.safe_files.discard(file_name)
+            if file_name in self.scan_items:
+                del self.scan_items[file_name]
+        
+        # Clear pending scans UI and update status
+        self.ui.pending_scans.clear()
+        self._update_overall_security_status()
 
     def select_all_files(self):
         for i in range(self.ui.selected_files_list_widget.count()):
@@ -817,6 +833,10 @@ class ServerController:
         self.safe_files.clear()
         self.ui.pending_scans.clear()
         
+        # Clear virus scanner cache to ensure fresh scans
+        if hasattr(self.network_server, 'virus_scanner') and hasattr(self.network_server.virus_scanner, 'clear_cache'):
+            self.network_server.virus_scanner.clear_cache()
+        
         # Show scanning in progress
         if hasattr(self.ui, 'send_status'):
             self.ui.send_status.setText("Scanning files... Safe files will be sent automatically.")
@@ -848,24 +868,6 @@ class ServerController:
         if hasattr(self.ui, 'scan_files_button'):
             self.ui.scan_files_button.setEnabled(False)
             self.ui.scan_files_button.setText("🔄 Scanning...")
-        
-        # Start scanning each file
-        for file_info in self.network_server.files_to_distribute:
-            file_path = file_info['path']
-            
-            # Start virus scan in background thread
-            def scan_file_background(path=file_path):
-                try:
-                    self.network_server.virus_scanner.scan_file(path)
-                except Exception as e:
-                    print(f"Error scanning {path}: {e}")
-            
-            # Start background scan thread
-            import threading
-            threading.Thread(target=scan_file_background, daemon=True).start()
-        
-        # Update UI to show scanning in progress
-        self._update_overall_security_status()
 
 if __name__ == "__main__":
     app = QApplication([])
