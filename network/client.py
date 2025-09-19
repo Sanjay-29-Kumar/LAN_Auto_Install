@@ -907,6 +907,13 @@ class NetworkClient(QObject):
                             self.server_found.emit(message)
                             print(f"Discovered server: {server_ip} from {addr[0]}")
                             self.status_update.emit(f"Found server: {server_ip}", "green")
+                            # Auto-connect immediately on discovery (LAN fast path)
+                            try:
+                                server_port = message.get("port", protocol.COMMAND_PORT)
+                                if self.running and server_ip not in self.connected_servers:
+                                    self._connect_to_server(server_ip, server_port)
+                            except Exception as e:
+                                print(f"Auto-connect on discovery failed for {server_ip}: {e}")
                 except socket.timeout:
                     # No server response in this cycle, continue
                     pass
