@@ -398,12 +398,19 @@ class ServerWindow(QMainWindow):
         self.pending_scans = PendingScansList()
         security_layout.addWidget(self.pending_scans)
         
-        # Share controls with safety check
+        # Share controls with send buttons
         share_controls = QHBoxLayout()
-        self.safety_check = QCheckBox("I confirm all files have been scanned and are safe")
-        self.safety_check.setStyleSheet(f"color: {FG}")
-        self.safety_check.setEnabled(False)
-        share_controls.addWidget(self.safety_check)
+        
+        # Send buttons
+        self.send_files_button = QPushButton("Send to Selected Clients")
+        self.send_files_button.clicked.connect(self._send_files_clicked)
+        self.send_files_button.setEnabled(False)
+        share_controls.addWidget(self.send_files_button)
+        
+        self.send_to_all_button = QPushButton("Send to All Clients")
+        self.send_to_all_button.clicked.connect(self._send_to_all_clicked)
+        self.send_to_all_button.setEnabled(False)
+        share_controls.addWidget(self.send_to_all_button)
         
         self.share_button = QPushButton("Share Files")
         self.share_button.setEnabled(False)
@@ -485,10 +492,10 @@ class ServerWindow(QMainWindow):
         scan_header.addStretch()
         
         # Scan Files button
-        self.scan_files_button = QPushButton("🔍 Scan Files for Security")
+        self.scan_files_button = QPushButton("🔍 Scan and Send Files")
         self.scan_files_button.setStyleSheet(f"""
             QPushButton {{
-                background-color: {WARNING};
+                background-color: {PRIMARY};
                 color: white;
                 border: none;
                 border-radius: 8px;
@@ -496,7 +503,7 @@ class ServerWindow(QMainWindow):
                 font-weight: 600;
             }}
             QPushButton:hover {{
-                background-color: {WARNING}dd;
+                background-color: {PRIMARY}dd;
             }}
         """)
         scan_header.addWidget(self.scan_files_button)
@@ -512,25 +519,15 @@ class ServerWindow(QMainWindow):
         self.virus_scan_widget.setVisible(False)
         security_layout.addWidget(self.virus_scan_widget)
         
-        # Share controls with safety check
+        # Share controls
         share_controls = QHBoxLayout()
-        self.safety_check = QCheckBox("I confirm all files have been scanned and are safe")
-        self.safety_check.setStyleSheet(f"color: {FG}")
-        self.safety_check.setEnabled(False)
-        share_controls.addWidget(self.safety_check)
+        
+        # Status message label
+        self.send_status = QLabel("")
+        self.send_status.setStyleSheet(f"color: {FG}")
+        share_controls.addWidget(self.send_status)
         
         share_controls.addStretch()
-        
-        # Send buttons
-        self.send_files_button = QPushButton("Send to Selected Clients")
-        self.send_files_button.clicked.connect(self._send_files_clicked)
-        self.send_files_button.setEnabled(False)
-        share_controls.addWidget(self.send_files_button)
-        
-        self.send_to_all_button = QPushButton("Send to All Clients")
-        self.send_to_all_button.clicked.connect(self._send_to_all_clicked)
-        self.send_to_all_button.setEnabled(False)
-        share_controls.addWidget(self.send_to_all_button)
         
         security_layout.addLayout(share_controls)
         

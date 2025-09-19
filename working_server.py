@@ -1,3 +1,17 @@
+import sys
+import os
+
+# Add the project root directory to Python path
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+import os
+import sys
+
+# Add the project root directory to Python path
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.append(current_dir)
+
 from ui.server_ui import (
     ServerWindow, FG_MUTED, SCAN_PENDING, SCAN_SAFE, SCAN_UNSAFE
 )
@@ -11,6 +25,7 @@ from network.server import NetworkServer
 from ui.custom_widgets import FileTransferWidget, ProfileListItemWidget
 import os
 import time
+import threading
 from network import protocol
 
 class ServerController:
@@ -26,8 +41,7 @@ class ServerController:
         self.load_user_preferences()
         
         # Connect security-related signals
-        if hasattr(ui, 'safety_check'):
-            ui.safety_check.toggled.connect(self._update_share_button)
+        if hasattr(ui, 'view_scan_details'):
             ui.view_scan_details.clicked.connect(self._show_scan_details)
         
         # Connect scan status updates
@@ -346,6 +360,21 @@ class ServerController:
         
         # Update overall security status
         self._update_overall_security_status()
+
+        # If this was the last file to scan, start sending safe files
+        if len(self.scanning_files) == 0:
+            print("[Auto-Send] All scans complete, initiating file transfer")
+            # Get connected clients
+            connected_clients = self.network_server.get_connected_clients()
+            if connected_clients:
+                selected_clients_ips = [client['ip'] for client in connected_clients]
+                safe_files = [f for f in self.network_server.files_to_distribute if f['name'] in self.safe_files]
+                if safe_files:
+                    # Update the network server's files list to only include safe files
+                    self.network_server.files_to_distribute = safe_files
+                    # Start the transfer
+                    print(f"[Auto-Send] Starting transfer of {len(safe_files)} safe files to {len(selected_clients_ips)} clients")
+                    self.network_server.distribute_files_to_clients(selected_clients_ips)
     
     def _update_overall_security_status(self):
         """Update the overall security status display"""
@@ -356,23 +385,28 @@ class ServerController:
         if total_files == 0:
             self.ui.overall_status.setText("Files not scanned yet")
             self.ui.overall_status.setStyleSheet(f"color: {FG_MUTED}")
-            self.ui.safety_check.setEnabled(False)
-            self.ui.send_files_button.setEnabled(False)
-            self.ui.send_to_all_button.setEnabled(False)
         elif scanning_files > 0:
-            self.ui.overall_status.setText(f"⏳ Scanning {scanning_files} files...")
+            scanned = total_files - scanning_files
+            self.ui.overall_status.setText(
+                f"⏳ Scanning files ({scanned}/{total_files} complete). "
+                f"Safe files: {safe_files} - Sending automatically"
+            )
             self.ui.overall_status.setStyleSheet(f"color: {SCAN_PENDING}")
-            self.ui.safety_check.setEnabled(False)
-            self.ui.send_files_button.setEnabled(False)
-            self.ui.send_to_all_button.setEnabled(False)
-        elif safe_files == total_files:
-            self.ui.overall_status.setText("✓ All files scanned and safe")
+            if hasattr(self.ui, 'send_status'):
+                self.ui.send_status.setText("Safe files will be sent automatically after scanning")
+        elif safe_files > 0:
+            unsafe_files = total_files - safe_files
+            status_text = f"✓ Scan complete - {safe_files} files safe (sending)"
+            if unsafe_files > 0:
+                status_text += f", {unsafe_files} unsafe (skipped)"
+            self.ui.overall_status.setText(status_text)
             self.ui.overall_status.setStyleSheet(f"color: {SCAN_SAFE}")
-            self.ui.safety_check.setEnabled(True)
+            if hasattr(self.ui, 'send_status'):
+                self.ui.send_status.setText("Transfer in progress...")
             # Re-enable scan button
             if hasattr(self.ui, 'scan_files_button'):
                 self.ui.scan_files_button.setEnabled(True)
-                self.ui.scan_files_button.setText("🔍 Scan Files for Security")
+                self.ui.scan_files_button.setText("🔍 Scan and Send Files")
         else:
             unsafe = total_files - safe_files
             self.ui.overall_status.setText(f"⚠️ {unsafe} files need attention")
@@ -503,11 +537,38 @@ class ServerController:
             QMessageBox.warning(self.ui, "No Files Selected", "Please select files to distribute.")
             return
 
+        # Filter files based on scan results
+        safe_files = []
+        unsafe_files = []
+        for file_info in self.network_server.files_to_distribute:
+            file_name = file_info['name']
+            if file_name in self.safe_files:
+                safe_files.append(file_info)
+            else:
+                unsafe_files.append(file_info)
+
+        if not safe_files:
+            QMessageBox.warning(self.ui, "No Safe Files", "None of the selected files have passed the security scan.")
+            return
+
+        # Update UI about skipped unsafe files
+        if unsafe_files:
+            skipped_names = [f.get('name', '') for f in unsafe_files]
+            QMessageBox.information(
+                self.ui,
+                "Unsafe Files Skipped",
+                f"The following files will be skipped due to security concerns:\n\n{', '.join(skipped_names)}"
+            )
+
+        # Prepare transfer list with only safe files
         self.ui.transfer_list_widget.clear()
         self.transfer_widgets = {}
         self.pending_transfers = set()
         if hasattr(self.ui, 'share_more_button'):
             self.ui.share_more_button.setVisible(False)
+
+        # Update network server's files_to_distribute to only include safe files for this transfer
+        self.network_server.files_to_distribute = safe_files
 
         # Populate transfer list with all selected files for all selected clients
         for file_info in self.network_server.files_to_distribute:
@@ -555,11 +616,38 @@ class ServerController:
             QMessageBox.warning(self.ui, "No Files Selected", "Please select files to distribute.")
             return
 
+        # Filter files based on scan results
+        safe_files = []
+        unsafe_files = []
+        for file_info in self.network_server.files_to_distribute:
+            file_name = file_info['name']
+            if file_name in self.safe_files:
+                safe_files.append(file_info)
+            else:
+                unsafe_files.append(file_info)
+
+        if not safe_files:
+            QMessageBox.warning(self.ui, "No Safe Files", "None of the selected files have passed the security scan.")
+            return
+
+        # Update UI about skipped unsafe files
+        if unsafe_files:
+            skipped_names = [f.get('name', '') for f in unsafe_files]
+            QMessageBox.information(
+                self.ui,
+                "Unsafe Files Skipped",
+                f"The following files will be skipped due to security concerns:\n\n{', '.join(skipped_names)}"
+            )
+
+        # Prepare transfer list with only safe files
         self.ui.transfer_list_widget.clear()
         self.transfer_widgets = {}
         self.pending_transfers = set()
         if hasattr(self.ui, 'share_more_button'):
             self.ui.share_more_button.setVisible(False)
+            
+        # Update network server's files_to_distribute to only include safe files for this transfer
+        self.network_server.files_to_distribute = safe_files
 
         for file_info in self.network_server.files_to_distribute:
             for client_ip in selected_clients_ips:
@@ -658,7 +746,66 @@ class ServerController:
             self.ui.share_more_button.setVisible(False)
         self.select_files()
     
+    def _auto_send_safe_files(self):
+        """Automatically send files that have passed security scan"""
+        print("Starting automatic file sending process...")
+        if not self.safe_files:
+            print("No safe files to send")
+            QMessageBox.warning(self.ui, "No Safe Files", "No files have passed the security scan yet.")
+            return
+            
+        # Get all connected clients
+        connected_clients = self.network_server.get_connected_clients()
+        selected_clients_ips = [client['ip'] for client in connected_clients]
+        print(f"Found connected clients: {selected_clients_ips}")
+        
+        if not selected_clients_ips:
+            print("No clients connected")
+            QMessageBox.warning(self.ui, "No Clients Connected", "No clients are connected to send files to.")
+            return
+            
+        # Filter to only safe files
+        safe_files = [f for f in self.network_server.files_to_distribute if f['name'] in self.safe_files]
+        unsafe_files = [f for f in self.network_server.files_to_distribute if f['name'] not in self.safe_files]
+        
+        # Notify about skipped files
+        if unsafe_files:
+            skipped_names = [f['name'] for f in unsafe_files]
+            QMessageBox.information(
+                self.ui,
+                "Unsafe Files Skipped",
+                f"The following files will be skipped due to security concerns:\n\n{', '.join(skipped_names)}"
+            )
+        
+        # Prepare transfer list with only safe files
+        self.ui.transfer_list_widget.clear()
+        self.transfer_widgets = {}
+        self.pending_transfers = set()
+        
+        # Update files to distribute with only safe files
+        self.network_server.files_to_distribute = safe_files
+        
+        # Initialize transfer widgets
+        for file_info in safe_files:
+            for client_ip in selected_clients_ips:
+                self._initiate_transfer(file_info, client_ip)
+                
+        # Start the actual file distribution
+        self.network_server.distribute_files_to_clients(selected_clients_ips)
+        self.ui.show_while_sharing()  # Show transfer progress UI
+                
+    def _initiate_transfer(self, file_info, client_ip):
+        """Helper method to start a single file transfer"""
+        widget = FileTransferWidget(file_info['name'], file_info['size'], client_ip)
+        item = QListWidgetItem(self.ui.transfer_list_widget)
+        item.setSizeHint(widget.sizeHint())
+        self.ui.transfer_list_widget.addItem(item)
+        self.ui.transfer_list_widget.setItemWidget(item, widget)
+        self.transfer_widgets[(file_info['name'], client_ip)] = widget
+        self.pending_transfers.add((file_info['name'], client_ip))
+        
     def start_security_scan(self):
+        import threading
         """Start security scanning for all selected files"""
         if not self.network_server.files_to_distribute:
             QMessageBox.warning(self.ui, "No Files", "Please select files first.")
@@ -669,6 +816,33 @@ class ServerController:
         self.scan_items.clear()
         self.safe_files.clear()
         self.ui.pending_scans.clear()
+        
+        # Show scanning in progress
+        if hasattr(self.ui, 'send_status'):
+            self.ui.send_status.setText("Scanning files... Safe files will be sent automatically.")
+        
+        # Get connected clients for later use
+        self.connected_clients = self.network_server.get_connected_clients()
+        
+        print("[Security Scan] Starting new security scan session")
+        print(f"[Security Scan] Files to scan: {[f['name'] for f in self.network_server.files_to_distribute]}")
+        
+        # Start scanning each file
+        for file_info in self.network_server.files_to_distribute:
+            file_path = file_info['path']
+            self.scanning_files.add(file_info['name'])
+            
+            # Start virus scan in background thread
+            def scan_file_background(path=file_path):
+                try:
+                    self.network_server.virus_scanner.scan_file(path)
+                except Exception as e:
+                    print(f"Error scanning {path}: {e}")
+                    
+            threading.Thread(target=scan_file_background, daemon=True).start()
+            
+        # After all scans are started, update UI status
+        self._update_overall_security_status()
         
         # Disable scan button during scanning
         if hasattr(self.ui, 'scan_files_button'):

@@ -730,8 +730,9 @@ class NetworkServer(QObject):
         client_data = self.clients[client_ip]
         while self.running and client_data["files_to_send"]:
             if client_data["current_file_transfer"]:
-                time.sleep(1) # Wait if a file is already being sent
+                time.sleep(0.1) # Reduced wait time for faster processing
                 continue
+            print(f"[Network] Processing next file for client {client_ip}")
 
             file_info = client_data["files_to_send"].pop(0) # Get next file from queue
             client_data["current_file_transfer"] = file_info
