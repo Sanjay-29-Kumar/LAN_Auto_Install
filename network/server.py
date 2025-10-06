@@ -219,7 +219,7 @@ class NetworkServer(QObject):
 
     def __init__(self, host='0.0.0.0', port=protocol.COMMAND_PORT, discovery_port=protocol.DISCOVERY_PORT):
         super().__init__()
-        self.port = port
+        self.port = protocol.COMMAND_PORT  # Always use COMMAND_PORT for TCP server
         self.discovery_port = discovery_port
         self.server_socket = None
         self.discovery_socket = None
