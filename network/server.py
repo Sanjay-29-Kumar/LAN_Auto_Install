@@ -9,11 +9,12 @@ import platform
 from PyQt5.QtCore import QObject, pyqtSignal, QTimer
 from collections import defaultdict
 from utils.virus_scanner import VirusScanner
+from .connection_handler import ConnectionHandler
 
 # Define chunk size for file transfers - increased for better performance
 CHUNK_SIZE = 1048576  # 1MB chunks for better throughput
 MAX_MEMORY_BUFFER = 104857600  # 100MB max memory buffer
-RECEIVED_FILES_DIR = "received_files" # For client, not server
+RECEIVED_FILES_DIR = "received_files"
 
 # Constants for connection management
 RECONNECT_TIMEOUT = 300  # 5 minutes to allow for reconnection
@@ -23,6 +24,162 @@ RETRY_DELAY = 2  # Seconds between retries
 from . import protocol
 
 class NetworkServer(QObject):
+    # Qt signals
+    client_connected = pyqtSignal(str)
+    client_disconnected = pyqtSignal(str)
+    transfer_progress = pyqtSignal(str, str, int)
+    status_update = pyqtSignal(str, str)
+    scan_complete = pyqtSignal(str, bool, str)
+    scan_status_update = pyqtSignal(str, str, str)
+    status_update_received = pyqtSignal(str, str, str)
+    
+    def __init__(self, port=5000):
+        super().__init__()
+        self.port = port
+        self.handler = ConnectionHandler(port=port, chunk_size=CHUNK_SIZE)
+        self.server_socket = None
+        self.clients = {}
+        self.running = False
+        self.transfers = defaultdict(dict)
+        self.transfer_threads = {}
+        self.virus_scanner = VirusScanner()
+
+    def start(self):
+        """Start the server with improved error handling"""
+        try:
+            self.server_socket = self.handler.create_server_socket()
+            self.handler.bind_server(self.server_socket)
+            self.server_socket.listen(10)  # Allow up to 10 pending connections
+            self.running = True
+            
+            # Start main server thread
+            threading.Thread(target=self._accept_connections, daemon=True).start()
+            self.status_update.emit("Server started successfully", "green")
+            
+        except Exception as e:
+            self.status_update.emit(f"Server failed to start: {str(e)}", "red")
+            raise
+    
+    def _accept_connections(self):
+        """Accept and handle client connections"""
+        while self.running:
+            try:
+                client_socket, client_ip = self.handler.accept_connection(self.server_socket)
+                self.clients[client_ip] = client_socket
+                self.client_connected.emit(client_ip)
+                
+                # Start client handler thread
+                threading.Thread(
+                    target=self._handle_client,
+                    args=(client_socket, client_ip),
+                    daemon=True
+                ).start()
+                
+            except Exception as e:
+                if self.running:
+                    self.status_update.emit(f"Connection error: {str(e)}", "orange")
+                    time.sleep(1)  # Prevent CPU spinning on repeated errors
+    
+    def _handle_client(self, client_socket, client_ip):
+        """Handle client communication with improved error recovery"""
+        try:
+            while self.running:
+                try:
+                    # Receive message with timeout
+                    client_socket.settimeout(60)  # 1-minute timeout
+                    data = client_socket.recv(CHUNK_SIZE)
+                    
+                    if not data:
+                        break
+                        
+                    # Process received data
+                    message = json.loads(data.decode())
+                    self._process_message(message, client_ip)
+                    
+                except socket.timeout:
+                    # Check if client is still connected
+                    client_socket.sendall(b'ping')
+                    continue
+                except json.JSONDecodeError:
+                    self.status_update.emit(f"Invalid data received from {client_ip}", "orange")
+                    continue
+                    
+        except Exception as e:
+            self.status_update.emit(f"Client handler error: {str(e)}", "red")
+        finally:
+            self._handle_client_disconnect(client_ip)
+    
+    def _handle_client_disconnect(self, client_ip):
+        """Handle client disconnection gracefully"""
+        self.handler.close_connection(client_ip)
+        if client_ip in self.clients:
+            del self.clients[client_ip]
+        self.client_disconnected.emit(client_ip)
+    
+    def _process_message(self, message, client_ip):
+        """Process received messages with proper error handling"""
+        try:
+            msg_type = message.get('type')
+            if msg_type == 'file_transfer':
+                self._handle_file_transfer(message, client_ip)
+            elif msg_type == 'status_update':
+                self._handle_status_update(message, client_ip)
+            else:
+                self.status_update.emit(f"Unknown message type from {client_ip}", "orange")
+                
+        except Exception as e:
+            self.status_update.emit(f"Error processing message: {str(e)}", "red")
+    
+    def _handle_file_transfer(self, message, client_ip):
+        """Handle file transfer with improved chunking and memory management"""
+        file_info = message['file_info']
+        file_name = file_info['name']
+        file_size = file_info['size']
+        
+        # Create transfer thread
+        transfer_thread = threading.Thread(
+            target=self._receive_file,
+            args=(client_ip, file_name, file_size),
+            daemon=True
+        )
+        self.transfer_threads[(client_ip, file_name)] = transfer_thread
+        transfer_thread.start()
+    
+    def _receive_file(self, client_ip, file_name, file_size):
+        """Receive file with proper chunking and progress tracking"""
+        try:
+            received_size = 0
+            output_path = os.path.join(RECEIVED_FILES_DIR, file_name)
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            
+            with open(output_path, 'wb') as f:
+                while received_size < file_size:
+                    chunk = self.clients[client_ip].recv(min(CHUNK_SIZE, file_size - received_size))
+                    if not chunk:
+                        raise ConnectionError("Connection lost during transfer")
+                        
+                    f.write(chunk)
+                    received_size += len(chunk)
+                    progress = int((received_size / file_size) * 100)
+                    self.transfer_progress.emit(file_name, client_ip, progress)
+                    
+            # Trigger post-receive actions
+            self._post_receive_actions(client_ip, file_name, output_path)
+            
+        except Exception as e:
+            self.status_update.emit(f"File transfer error: {str(e)}", "red")
+            # Cleanup incomplete transfer
+            if os.path.exists(output_path):
+                os.remove(output_path)
+    
+    def stop(self):
+        """Stop server and cleanup resources"""
+        self.running = False
+        self.handler.close_all_connections()
+        if self.server_socket:
+            self.server_socket.close()
+        self.status_update.emit("Server stopped", "orange")
+    
     def _post_receive_actions(self, client_ip, file_name, file_path):
         installer_dir = os.path.dirname(file_path)
         auto_installer = AutoInstaller(installers_dir=installer_dir)

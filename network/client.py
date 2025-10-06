@@ -15,6 +15,7 @@ from PyQt5.QtCore import QObject, pyqtSignal, QTimer
 from . import protocol
 from .protocol import get_local_ip, get_adaptive_timeouts
 from collections import defaultdict
+from .connection_handler import ConnectionHandler
 import struct
 import hashlib
 
@@ -23,27 +24,28 @@ CHUNK_SIZE = 131072  # Default 128KB chunks, will be overridden by adaptive sizi
 RECEIVED_FILES_DIR = "received_files"
 
 class NetworkClient(QObject):
-    server_found = pyqtSignal(dict) # Emits server info {ip, hostname, os_type, is_windows}
-    connection_status = pyqtSignal(str, bool) # Emits (server_ip, connected_status)
-    file_received = pyqtSignal(dict) # Emits {name, size, sender, path}
-    file_progress = pyqtSignal(str, str, int) # Emits (file_name, server_ip, percentage)
-    status_update = pyqtSignal(str, str) # Emits (message, color)
-    status_update_received = pyqtSignal(str, str, str) # Emits (file_name, server_ip, status)
+    server_found = pyqtSignal(dict)  # Emits server info {ip, hostname, os_type, is_windows}
+    connection_status = pyqtSignal(str, bool)  # Emits (server_ip, connected_status)
+    file_received = pyqtSignal(dict)  # Emits {name, size, sender, path}
+    file_progress = pyqtSignal(str, str, int)  # Emits (file_name, server_ip, percentage)
+    status_update = pyqtSignal(str, str)  # Emits (message, color)
+    status_update_received = pyqtSignal(str, str, str)  # Emits (file_name, server_ip, status)
 
-    def __init__(self, host='0.0.0.0', port=0): # Client binds to 0.0.0.0 and an ephemeral port
+    def __init__(self, host='0.0.0.0', port=0):  # Client binds to 0.0.0.0 and an ephemeral port
         super().__init__()
         self.host = host
         self.port = port
-        self.client_socket = None
-        self.local_ip = self._get_local_ip()  # Determine actual local IP early for UI display
-        self.connected_servers = {} # {ip: {socket: ..., thread: ..., info: ...}}
-        self.servers = {} # Discovered servers {ip: info}
+        self.handler = ConnectionHandler(port=port, chunk_size=CHUNK_SIZE)
+        self.local_ip = get_local_ip()  # Use protocol's get_local_ip for consistency
+        self.connected_servers = {}  # {ip: {socket: ..., thread: ..., info: ...}}
+        self.servers = {}  # Discovered servers {ip: info}
         self.running = False
         self.discovery_client_running = False
         self.discovery_socket = None
         self.discovery_thread = None
         self.received_files_path = os.path.join(os.getcwd(), RECEIVED_FILES_DIR)
         os.makedirs(self.received_files_path, exist_ok=True)
+        
         # Prepare categorized directories
         self.dirs = {
             "installer": os.path.join(self.received_files_path, "installer"),
