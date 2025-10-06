@@ -7,6 +7,7 @@ import json
 import os
 import threading
 import time
+import hashlib
 from . import protocol
 
 class FileSender(threading.Thread):
@@ -42,62 +43,143 @@ class FileSender(threading.Thread):
         self.sock.connect((self.client_ip, self.client_port))
 
     def _send_file(self):
+        MAX_RETRIES = 5
+        RETRY_DELAY = 5  # seconds
+        
         file_size = os.path.getsize(self.file_path)
         
-        # Select chunk size based on file size
-        if file_size < 100 * 1024 * 1024:  # < 100MB
-            chunk_size = protocol.CHUNK_SIZE_SMALL
-        elif file_size < 1024 * 1024 * 1024:  # < 1GB
-            chunk_size = protocol.CHUNK_SIZE_MEDIUM
-        else:  # >= 1GB
-            chunk_size = protocol.CHUNK_SIZE_LARGE
+        # Select chunk size based on file size with more conservative sizes
+        if file_size < 50 * 1024 * 1024:  # < 50MB
+            chunk_size = protocol.CHUNK_SIZE_SMALL // 2  # Smaller chunks for better reliability
+        elif file_size < 500 * 1024 * 1024:  # < 500MB
+            chunk_size = protocol.CHUNK_SIZE_MEDIUM // 2
+        else:  # >= 500MB
+            chunk_size = protocol.CHUNK_SIZE_LARGE // 2
             
         total_chunks = (file_size + chunk_size - 1) // chunk_size
 
+        # Prepare header with additional metadata
         header = {
             'type': protocol.MSG_TYPE_FILE_HEADER,
             'file_name': self.file_info['name'],
             'file_size': file_size,
             'total_chunks': total_chunks,
             'chunk_size': chunk_size,
-            'category': self.file_info.get('category', 'other')
+            'category': self.file_info.get('category', 'other'),
+            'checksum': self._calculate_file_checksum()
         }
-        self._send_message(header)
 
-        # Wait for header acknowledgment
-        ack = self._receive_message()
-        if not ack or ack.get('type') != protocol.MSG_TYPE_FILE_HEADER_ACK or ack.get('status') != 'ok':
+        # Send header with retries
+        for retry in range(MAX_RETRIES):
+            try:
+                self._send_message(header)
+                ack = self._receive_message(timeout=30)  # Longer timeout for header ack
+                if ack and ack.get('type') == protocol.MSG_TYPE_FILE_HEADER_ACK and ack.get('status') == 'ok':
+                    break
+            except Exception as e:
+                if retry == MAX_RETRIES - 1:
+                    raise Exception(f"File transfer initialization failed after {MAX_RETRIES} attempts: {e}")
+                time.sleep(RETRY_DELAY)
+        else:
             raise Exception("File transfer rejected by client")
 
+        failed_chunks = set()
         with open(self.file_path, 'rb') as f:
             for i in range(total_chunks):
                 if not self.running:
                     self._send_message({'type': protocol.MSG_TYPE_CANCEL_TRANSFER})
                     break
-                
-                chunk_data = f.read(header['chunk_size'])
+
+                chunk_data = f.read(chunk_size)
                 chunk_message = {
                     'type': protocol.MSG_TYPE_FILE_CHUNK,
                     'chunk_index': i,
-                    'size': len(chunk_data)
+                    'size': len(chunk_data),
+                    'checksum': self._calculate_chunk_checksum(chunk_data)
                 }
-                self._send_message(chunk_message, chunk_data)
-                self.unacked_chunks.add(i)
 
-                # Adaptive sliding window based on file size
-                window_size = 3 if file_size < 100 * 1024 * 1024 else (5 if file_size < 1024 * 1024 * 1024 else 8)
-                if len(self.unacked_chunks) >= window_size:
-                    self._wait_for_acks()
+                # Retry failed chunks
+                retry_count = 0
+                while retry_count < MAX_RETRIES:
+                    try:
+                        if i in failed_chunks:
+                            f.seek(i * chunk_size)
+                            chunk_data = f.read(chunk_size)
+                        
+                        self._send_message(chunk_message, chunk_data)
+                        self.unacked_chunks.add(i)
+
+                        # More conservative window size for better reliability
+                        window_size = 2 if file_size < 50 * 1024 * 1024 else (3 if file_size < 500 * 1024 * 1024 else 4)
+                        if len(self.unacked_chunks) >= window_size:
+                            failed = self._wait_for_acks(timeout=60)  # Longer timeout for acks
+                            if failed:
+                                failed_chunks.update(failed)
+                                continue
+                        
+                        if i in failed_chunks:
+                            failed_chunks.remove(i)
+                        break
+                        
+                    except Exception as e:
+                        print(f"Error sending chunk {i}: {e}")
+                        retry_count += 1
+                        if retry_count < MAX_RETRIES:
+                            time.sleep(RETRY_DELAY * (retry_count + 1))  # Exponential backoff
+                        else:
+                            raise Exception(f"Failed to send chunk {i} after {MAX_RETRIES} attempts")
 
                 if self.progress_callback:
                     self.progress_callback(self.file_info['name'], (i + 1) / total_chunks * 100)
 
-        # Wait for all remaining acks
-        while self.unacked_chunks and self.running:
-            self._wait_for_acks()
+        # Wait for all remaining acks with retries
+        retry_count = 0
+        while (self.unacked_chunks or failed_chunks) and self.running:
+            try:
+                failed = self._wait_for_acks(timeout=60)
+                if failed:
+                    failed_chunks.update(failed)
+                if not failed and not self.unacked_chunks:
+                    break
+                retry_count += 1
+                if retry_count >= MAX_RETRIES:
+                    raise Exception("Failed to get acknowledgment for all chunks")
+                time.sleep(RETRY_DELAY * (retry_count + 1))
+            except Exception as e:
+                if retry_count >= MAX_RETRIES:
+                    raise Exception(f"Failed to complete file transfer: {e}")
 
         if self.running:
-            self._send_message({'type': protocol.MSG_TYPE_FILE_END})
+            # Send end message with retries
+            for retry in range(MAX_RETRIES):
+                try:
+                    self._send_message({'type': protocol.MSG_TYPE_FILE_END})
+                    ack = self._receive_message(timeout=30)
+                    if ack and ack.get('type') == protocol.MSG_TYPE_FILE_COMPLETE_ACK:
+                        break
+                except Exception:
+                    if retry == MAX_RETRIES - 1:
+                        raise Exception("Failed to confirm file transfer completion")
+                    time.sleep(RETRY_DELAY)
+                    
+    def _calculate_file_checksum(self):
+        """Calculate SHA-256 checksum of the file"""
+        try:
+            import hashlib
+            sha256_hash = hashlib.sha256()
+            with open(self.file_path, "rb") as f:
+                for byte_block in iter(lambda: f.read(4096), b""):
+                    sha256_hash.update(byte_block)
+            return sha256_hash.hexdigest()
+        except Exception:
+            return None
+            
+    def _calculate_chunk_checksum(self, chunk_data):
+        """Calculate SHA-256 checksum of a chunk"""
+        try:
+            return hashlib.sha256(chunk_data).hexdigest()
+        except Exception:
+            return None
             if self.completion_callback:
                 self.completion_callback(self.file_info['name'], 'completed')
 

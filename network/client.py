@@ -118,6 +118,27 @@ class NetworkClient(QObject):
         self.start_discovery_client()
         print("Client started.")
 
+    def _check_connection_alive(self, server_ip):
+        """Check if a server connection is still alive and valid"""
+        if server_ip not in self.connected_servers:
+            return False
+            
+        server_info = self.connected_servers[server_ip]
+        current_time = time.time()
+        
+        # Check if the last heartbeat is too old
+        if current_time - server_info.get("last_heartbeat", 0) > 120:  # 2 minutes
+            return False
+            
+        # Try to send a test message
+        try:
+            socket_obj = server_info["socket"]
+            test_msg = {"type": "PING"}
+            socket_obj.sendall(json.dumps(test_msg).encode('utf-8') + b'\n')
+            return True
+        except Exception:
+            return False
+            
     def stop_client(self):
         if not self.running:
             return
@@ -128,18 +149,26 @@ class NetworkClient(QObject):
             self._disconnect_from_server(server_ip)
         print("Client stopped.")
 
-    def _connect_to_server(self, server_ip=None, server_port=protocol.COMMAND_PORT):
+    def _connect_to_server(self, server_ip=None, server_port=protocol.COMMAND_PORT, retry_count=0):
+        MAX_RETRIES = 5
+        RETRY_DELAY = 5  # seconds
+        
         if not server_ip:
             print("No server IP provided")
             self.status_update.emit("No server IP provided", "red")
-            return
+            return False
+            
         if server_ip in self.connected_servers:
-            print(f"Already connected to {server_ip}")
-            self.status_update.emit(f"Already connected to {server_ip}", "yellow")
-            return
+            if self._check_connection_alive(server_ip):
+                print(f"Already connected to {server_ip}")
+                self.status_update.emit(f"Already connected to {server_ip}", "yellow")
+                return True
+            else:
+                # Connection is stale, clean it up and retry
+                self._disconnect_from_server(server_ip, reconnect=False)
 
-        print(f"Attempting to connect to server {server_ip}:{server_port}")
-        self.status_update.emit(f"Connecting to {server_ip}...", "blue")
+        print(f"Attempting to connect to server {server_ip}:{server_port} (attempt {retry_count + 1}/{MAX_RETRIES})")
+        self.status_update.emit(f"Connecting to {server_ip}... (attempt {retry_count + 1})", "blue")
 
         try:
             client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -147,49 +176,63 @@ class NetworkClient(QObject):
             local_ip = get_local_ip()
             timeouts = get_adaptive_timeouts(local_ip, server_ip)
             
-            client_socket.settimeout(timeouts['connection'] * 2)  # Adaptive connection timeout
-            client_socket.connect((server_ip, server_port))
-            client_socket.settimeout(timeouts['operation'] * 2)  # Adaptive timeout for file operations
+            # Set longer connection timeout for reliability
+            client_socket.settimeout(timeouts['connection'] * 2)
             
-            # Set adaptive socket buffer sizes for better performance
-            try:
-                buffer_size = timeouts.get('buffer_size', 1048576)
-                client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, buffer_size)
-                client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, buffer_size)
-                # Enable TCP keepalive and configure for cross-machine stability
-                client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-                if hasattr(socket, 'TCP_USER_TIMEOUT'):
-                    client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT, 120000)  # 120s for cross-machine
-            except Exception:
-                pass  # Some systems may not support these options
-
-            # Enable TCP keepalive to reduce idle disconnects
-            try:
-                client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-            except Exception:
-                pass
-            try:
-                client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            except Exception:
-                pass
-
+            # Configure socket for reliability
+            client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            
+            # Set platform-specific TCP keepalive options
+            if platform.system() == "Windows":
+                client_socket.ioctl(socket.SIO_KEEPALIVE_VALS, (1, 60*1000, 5*1000))
+            else:
+                # Linux/Unix systems
+                client_socket.setsockopt(socket.SOL_TCP, socket.TCP_KEEPIDLE, 60)
+                client_socket.setsockopt(socket.SOL_TCP, socket.TCP_KEEPINTVL, 5)
+                client_socket.setsockopt(socket.SOL_TCP, socket.TCP_KEEPCNT, 5)
+                
+            # Set buffer sizes for performance
+            buffer_size = timeouts.get('buffer_size', 1048576)
+            client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, buffer_size)
+            client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, buffer_size)
+            
+            # Set TCP user timeout for faster failure detection
+            if hasattr(socket, 'TCP_USER_TIMEOUT'):
+                client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT, 180000)  # 3 minutes
+                
+            # Attempt connection
+            client_socket.connect((server_ip, server_port))
+            client_socket.settimeout(timeouts['operation'] * 2)
+            
             print(f"Connected to server {server_ip}:{server_port}")
             
-            # Send client info to server
+            # Send client info with retry
             client_info = {
                 "type": "CLIENT_INFO",
                 "ip": client_socket.getsockname()[0],
                 "hostname": socket.gethostname(),
                 "os_type": platform.system(),
-                "is_windows": platform.system() == "Windows"
+                "is_windows": platform.system() == "Windows",
+                "reconnect": retry_count > 0
             }
-            client_socket.sendall(json.dumps(client_info).encode('utf-8') + b'\n')
+            
+            max_info_retries = 3
+            for info_retry in range(max_info_retries):
+                try:
+                    client_socket.sendall(json.dumps(client_info).encode('utf-8') + b'\n')
+                    break
+                except Exception as e:
+                    if info_retry == max_info_retries - 1:
+                        raise Exception(f"Failed to send client info: {e}")
+                    time.sleep(1)
 
+            # Start server handler thread
             server_thread = threading.Thread(target=self._handle_server, args=(client_socket, server_ip))
             server_thread.daemon = True
             server_thread.start()
 
-            # Start heartbeat thread to keep connection alive
+            # Start heartbeat thread
             heartbeat_thread = threading.Thread(target=self._heartbeat_loop, args=(server_ip,), daemon=True)
             heartbeat_thread.start()
 
@@ -197,18 +240,24 @@ class NetworkClient(QObject):
                 "socket": client_socket,
                 "thread": server_thread,
                 "connected_at": time.time(),
-                "timeouts": timeouts,  # Store adaptive timeouts
-                "local_ip": local_ip
+                "timeouts": timeouts,
+                "local_ip": local_ip,
+                "heartbeat_thread": heartbeat_thread,
+                "last_heartbeat": time.time()
             }
-            # Store timeouts for use in message handling
             self._current_timeouts = timeouts
-            self.connected_servers[server_ip]["heartbeat_thread"] = heartbeat_thread
             self.connection_status.emit(server_ip, True)
             self.status_update.emit(f"Connected to {server_ip}", "green")
+            return True
 
-        except socket.timeout:
-            print(f"Connection to {server_ip} timed out.")
-            self.status_update.emit(f"Connection to {server_ip} timed out", "red")
+        except (socket.timeout, ConnectionRefusedError) as e:
+            print(f"Connection attempt {retry_count + 1} to {server_ip} failed: {str(e)}")
+            if retry_count < MAX_RETRIES - 1:
+                time.sleep(RETRY_DELAY * (retry_count + 1))  # Exponential backoff
+                return self._connect_to_server(server_ip, server_port, retry_count + 1)
+            else:
+                self.status_update.emit(f"Failed to connect to {server_ip} after {MAX_RETRIES} attempts", "red")
+                return False
         except ConnectionRefusedError:
             print(f"Connection to {server_ip} refused. Server might not be running or port is wrong.")
             self.status_update.emit(f"Connection to {server_ip} refused", "red")

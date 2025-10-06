@@ -99,18 +99,18 @@ CHUNK_SIZE = 1024 * 1024
 
 # Adaptive timeouts based on network topology
 # Cross-machine timeouts (different subnets or slower connections)
-CROSS_MACHINE_CONNECTION_TIMEOUT = 120  # seconds
-CROSS_MACHINE_OPERATION_TIMEOUT = 600  # seconds
-CROSS_MACHINE_INACTIVITY_TIMEOUT = 1200  # 20 minutes
-CROSS_MACHINE_ACK_TIMEOUT = 30  # seconds
-CROSS_MACHINE_HEARTBEAT_INTERVAL = 60  # seconds
+CROSS_MACHINE_CONNECTION_TIMEOUT = 300  # 5 minutes - increased for slow networks
+CROSS_MACHINE_OPERATION_TIMEOUT = 1800  # 30 minutes - increased for large files
+CROSS_MACHINE_INACTIVITY_TIMEOUT = 3600  # 60 minutes - increased for long operations
+CROSS_MACHINE_ACK_TIMEOUT = 60  # 1 minute - increased for network latency
+CROSS_MACHINE_HEARTBEAT_INTERVAL = 30  # 30 seconds - more frequent heartbeats
 
 # Same-machine timeouts (localhost or same subnet)
-SAME_MACHINE_CONNECTION_TIMEOUT = 10  # seconds
-SAME_MACHINE_OPERATION_TIMEOUT = 120  # seconds
-SAME_MACHINE_INACTIVITY_TIMEOUT = 300  # 5 minutes
-SAME_MACHINE_ACK_TIMEOUT = 5  # seconds
-SAME_MACHINE_HEARTBEAT_INTERVAL = 10  # seconds
+SAME_MACHINE_CONNECTION_TIMEOUT = 30  # seconds - increased for network congestion
+SAME_MACHINE_OPERATION_TIMEOUT = 600  # 10 minutes - increased for larger files
+SAME_MACHINE_INACTIVITY_TIMEOUT = 1800  # 30 minutes - increased for long operations
+SAME_MACHINE_ACK_TIMEOUT = 15  # seconds - increased for network congestion
+SAME_MACHINE_HEARTBEAT_INTERVAL = 10  # seconds - unchanged
 
 # Default timeout (fallback)
 ACK_TIMEOUT = 5  # seconds
@@ -133,7 +133,7 @@ def is_cross_machine_connection(local_ip, remote_ip):
     """
     Determine if connection is cross-machine based on IP subnet comparison.
     Returns True if cross-machine, False if same-machine.
-    Enhanced for better LAN detection.
+    Enhanced for better LAN detection with more permissive subnet matching.
     """
     try:
         # Same IP = same machine
@@ -148,29 +148,31 @@ def is_cross_machine_connection(local_ip, remote_ip):
         local_addr = ipaddress.IPv4Address(local_ip)
         remote_addr = ipaddress.IPv4Address(remote_ip)
         
-        # Check common subnet masks for LAN networks
-        subnet_masks = [24, 16, 20, 22]  # /24, /16, /20, /22 are common
+        # Check with a broader range of subnet masks for better LAN detection
+        subnet_masks = [8, 16, 20, 21, 22, 23, 24, 25]  # More inclusive subnet masks
         
         for mask in subnet_masks:
-            local_network = ipaddress.IPv4Network(f"{local_ip}/{mask}", strict=False)
-            if remote_addr in local_network:
-                return False  # Same subnet = likely same LAN
+            try:
+                local_network = ipaddress.IPv4Network(f"{local_ip}/{mask}", strict=False)
+                if remote_addr in local_network:
+                    return False  # Same subnet = likely same LAN
+            except ValueError:
+                continue
         
-        # Check for common private network ranges
+        # Check for common private network ranges with more permissive matching
         private_ranges = [
             ipaddress.IPv4Network('192.168.0.0/16'),    # 192.168.x.x
             ipaddress.IPv4Network('10.0.0.0/8'),        # 10.x.x.x
             ipaddress.IPv4Network('172.16.0.0/12'),     # 172.16-31.x.x
+            ipaddress.IPv4Network('169.254.0.0/16'),    # Link-local addresses
         ]
         
         local_is_private = any(local_addr in network for network in private_ranges)
         remote_is_private = any(remote_addr in network for network in private_ranges)
         
-        # If both are in the same private range, consider them same LAN
+        # If both are in private ranges, consider them same LAN by default
         if local_is_private and remote_is_private:
-            for network in private_ranges:
-                if local_addr in network and remote_addr in network:
-                    return False  # Same private network = same LAN
+            return False  # Assume same LAN for private network addresses
             
         return True  # Different networks = cross-machine
     except Exception as e:
