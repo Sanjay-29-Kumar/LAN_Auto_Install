@@ -540,8 +540,8 @@ class NetworkServer(QObject):
     def _get_local_ips(self):
         """Get all viable local IP addresses for LAN communication"""
         viable_ips = set()
-        
-        # Fallback if netifaces is not available
+
+        # Primary method: Try to get a real external-facing IP
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
@@ -562,13 +562,13 @@ class NetworkServer(QObject):
                     if "IPv4 Address" in line and ":" in line:
                         ip = line.split(":")[1].strip()
                         if ip and not ip.startswith("127.") and not ip.startswith("169.254."):
-                            return ip
+                            viable_ips.add(ip)
             else:
                 result = subprocess.run(["hostname", "-I"], capture_output=True, text=True)
                 ips = result.stdout.strip().split()
                 for ip in ips:
                     if not ip.startswith("127.") and not ip.startswith("169.254."):
-                        return ip
+                        viable_ips.add(ip)
         except Exception:
             pass
         
@@ -576,7 +576,7 @@ class NetworkServer(QObject):
         try:
             ip = socket.gethostbyname(socket.gethostname())
             if ip and not ip.startswith("127.") and not ip.startswith("169.254."):
-                return ip
+                viable_ips.add(ip)
         except Exception:
             pass
         
@@ -586,11 +586,15 @@ class NetworkServer(QObject):
             ip_list = socket.gethostbyname_ex(hostname)[2]
             for ip in ip_list:
                 if not ip.startswith("127.") and not ip.startswith("169.254."):
-                    return ip
+                    viable_ips.add(ip)
         except Exception:
             pass
         
-        return "127.0.0.1"
+        # If no viable IPs found, add localhost
+        if not viable_ips:
+            viable_ips.add("127.0.0.1")
+        
+        return viable_ips
 
     def get_server_ip(self):
         return self.server_ip if self.server_ip else "N/A"
