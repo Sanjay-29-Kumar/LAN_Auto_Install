@@ -10,7 +10,7 @@ requests>=2.31.0
 cryptography>=41.0.7
 
 # File Operations
-pathlib>=1.0.1
+#pathlib>=1.0.1
 winshell>=0.6
 
 # Build Tools
