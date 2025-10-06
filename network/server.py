@@ -247,10 +247,12 @@ class NetworkServer(QObject):
             self.server_socket.listen(10)  # Increased backlog for better connection handling
             self.running = True
             threading.Thread(target=self._accept_connections, daemon=True).start()
-            self.start_discovery_server()
+            # Get all available IPs
             self.server_ips = self._get_local_ips()
             # Use first IP as primary but keep all for discovery
             self.server_ip = next(iter(self.server_ips)) if self.server_ips else '0.0.0.0'
+            # Start discovery after setting IP
+            self.start_discovery_server()
             self.server_ip_updated.emit(self.server_ip)
             print(f"Server listening on {self.host}:{self.port}")
             print(f"Discovery advertising on UDP {self.discovery_port}")
@@ -1048,7 +1050,7 @@ class NetworkServer(QObject):
                 current_time = time.time()
                 if current_time - last_ip_update >= ip_update_interval:
                     old_ip = self.server_ip
-                    self.server_ip = self._get_local_ip()
+                    self.server_ip = next(iter(self._get_local_ips())) if self._get_local_ips() else '0.0.0.0'
                     if old_ip != self.server_ip:
                         print(f"Server IP updated from {old_ip} to {self.server_ip}")
                         self.server_ip_updated.emit(self.server_ip)
@@ -1062,7 +1064,7 @@ class NetworkServer(QObject):
                     message_text = data.decode('utf-8')
                     if message_text == "DISCOVER_SERVER":
                         # Build advertisement with the most accurate IP at send time
-                        current_ip = self.server_ip or self._get_local_ip()
+                        current_ip = self.server_ip or next(iter(self._get_local_ips())) if self._get_local_ips() else '0.0.0.0'
                         server_info = {
                             "type": "SERVER_ADVERTISEMENT",
                             "ip": current_ip,
