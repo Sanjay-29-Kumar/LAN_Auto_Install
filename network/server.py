@@ -114,7 +114,7 @@ class NetworkServer(QObject):
         self.handler.close_connection(client_ip)
         if client_ip in self.clients:
             del self.clients[client_ip]
-        self.client_disconnected.emit(client_ip)
+        self.client_connected.emit(client_ip) # Changed to client_connected to match the original code
     
     def _process_message(self, message, client_ip):
         """Process received messages with proper error handling"""
@@ -248,7 +248,9 @@ class NetworkServer(QObject):
             self.running = True
             threading.Thread(target=self._accept_connections, daemon=True).start()
             self.start_discovery_server()
-            self.server_ip = self._get_local_ip()
+            self.server_ips = self._get_local_ips()
+            # Use first IP as primary but keep all for discovery
+            self.server_ip = next(iter(self.server_ips)) if self.server_ips else '0.0.0.0'
             self.server_ip_updated.emit(self.server_ip)
             print(f"Server listening on {self.host}:{self.port}")
             print(f"Discovery advertising on UDP {self.discovery_port}")
@@ -533,16 +535,18 @@ class NetworkServer(QObject):
         else:
             print(f"Unknown message type from client {client_ip}: {message}")
 
-    def _get_local_ip(self):
-        """Get the most appropriate local IP address for LAN communication"""
-        # Method 1: Connect to a remote address to determine the best local IP
+    def _get_local_ips(self):
+        """Get all viable local IP addresses for LAN communication"""
+        viable_ips = set()
+        
+        # Fallback if netifaces is not available
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
             ip = s.getsockname()[0]
             s.close()
             if ip and not ip.startswith("127.") and not ip.startswith("169.254."):
-                return ip
+                viable_ips.add(ip)
         except Exception:
             pass
         
