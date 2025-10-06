@@ -1,2 +1,20 @@
-cryptography>=42.0.4
+# GUI Framework
+PyQt5>=5.15.9
+
+# System Utilities
+psutil>=5.9.6
+pywin32>=311
+
+# Networking & Security
 requests>=2.31.0
+cryptography>=41.0.7
+
+# File Operations
+pathlib>=1.0.1
+winshell>=0.6
+
+# Build Tools
+pyinstaller>=6.3.0
+
+# Optional Dependencies
+pillow>=10.2.0  # For icon conversion in build_executables.py
