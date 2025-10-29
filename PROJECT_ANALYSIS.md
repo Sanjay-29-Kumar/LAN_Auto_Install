@@ -9,23 +9,25 @@
 
 ### **🚀 Core Applications**
 
-#### **`working_client.py`** (34.3KB)
+#### **`working_client.py`** - **Main client with integrated auto setup**
 - **Purpose**: Client-side GUI application for receiving and auto-installing software
 - **Key Features**:
   - Auto-discovers servers on LAN
   - Receives files via TCP (Port 5002)
   - Automatically installs received software silently
   - Real-time status updates and progress tracking
+  - **Enhanced connection management and file integrity checks**
 - **UI Components**: Server list, received files list, connection status, progress bars
 - **Dependencies**: PyQt5, socket, threading, dynamic_installer
 
-#### **`working_server.py`** (25.5KB)
+#### **`working_server.py`** - **Main server for file distribution**
 - **Purpose**: Server-side GUI application for distributing software to clients
 - **Key Features**:
   - Broadcasts availability on LAN (UDP Port 5001)
   - Manages connected clients list
   - Distributes files to selected/all clients
   - Tracks distribution progress and status
+  - **Enhanced client management and file transfer with integrity checks**
 - **UI Components**: Client list, file distribution panel, progress monitoring
 - **Dependencies**: PyQt5, socket, threading, file transfer protocols
 
@@ -33,7 +35,7 @@
 
 ### **🔧 Utils Module (`utils/`)**
 
-#### **`dynamic_installer.py`** (16.9KB) - **[NEW ENHANCED]**
+#### **`dynamic_installer.py`** - **Robust silent installation logic**
 - **Purpose**: Advanced silent installation system with intelligence
 - **Key Features**:
   - **Installer-specific switches** (nmap, LocalSend, Chrome, etc.)
@@ -46,7 +48,7 @@
   - LocalSend: Optimized NSIS switches
   - Generic: 8 fallback switches
 
-#### **`installer.py`** (11.4KB)
+#### **`installer.py`** - **Software installer utilities**
 - **Purpose**: Core installation utilities and registry operations
 - **Key Features**:
   - Windows registry software detection
@@ -55,45 +57,33 @@
   - Software inventory management
 - **Dependencies**: winreg, psutil, subprocess
 
-#### **`system_info.py`** (11.1KB)
-- **Purpose**: System information gathering and environment detection
-- **Key Features**:
-  - Hardware specifications
-  - OS version and architecture
-  - Network configuration
-  - Installed software inventory
-- **Dependencies**: platform, psutil, winreg
-
-#### **`file_manager.py`** (9.1KB)
-- **Purpose**: File operations and management utilities
-- **Key Features**:
-  - File categorization (installer/document/media/archive)
-  - Storage organization
-  - File integrity checking
-  - Cleanup operations
-
 ---
 
 ### **🌐 Network Module (`network/`)**
 
-#### **`transfer.py`** (12.1KB)
+#### **`protocol.py`** - **Communication protocol with adaptive settings**
+- **Purpose**: Network communication protocols and message handling
+- **Key Features**:
+  - **Length-prefixed JSON messages for reliable framing**
+  - **Binary data handling** for file content
+  - **Connection management** and keep-alive with heartbeat tracking
+  - **Network quality detection & adaptation** (adaptive buffer sizes, timeouts, chunk sizes)
+  - **Socket optimization** (TCP_NODELAY, TCP_USER_TIMEOUT, TCP_KEEPALIVE)
+  - **Enhanced error recovery** with retry mechanisms and exponential backoff
+- **Protocol**: TCP-based with JSON metadata headers
+
+#### **`transfer.py`** - **Reliable binary file transfer logic**
 - **Purpose**: Reliable binary file transfer protocol
 - **Key Features**:
   - **Chunked transfer** (2MB chunks)
   - **Metadata exchange** (filename, size, category)
   - **Progress tracking** with callbacks
   - **Error recovery** and timeout handling
+  - **SHA-256 hash calculation and verification for file integrity**
+  - **Metadata acknowledgment before file transfer**
 - **Protocol**: TCP-based with JSON metadata headers
 
-#### **`protocol.py`** (11.2KB)
-- **Purpose**: Network communication protocols and message handling
-- **Key Features**:
-  - **JSON-based messaging** for metadata
-  - **Binary data handling** for file content
-  - **Connection management** and keep-alive
-  - **Protocol versioning** and compatibility
-
-#### **`discovery.py`** (6.0KB)
+#### **`discovery.py`** - **Server discovery logic**
 - **Purpose**: Automatic server-client discovery on LAN
 - **Key Features**:
   - **UDP broadcast** discovery (Port 5001)
@@ -105,14 +95,14 @@
 
 ### **⚙️ Configuration & Build Files**
 
-#### **`build_working_exe.py`** (4.3KB)
-- **Purpose**: PyInstaller build automation script
+#### **`build_integrated_system.py`** - **Build script for final system**
+- **Purpose**: PyInstaller build automation script for the integrated system
 - **Key Features**:
   - **Automated compilation** of both client and server
   - **Dependency bundling** and hidden imports
   - **Windows-specific optimizations**
   - **Size reporting** and build verification
-- **Output**: Standalone .exe files (35.5MB each)
+- **Output**: Standalone .exe files (e.g., `LAN_Install_Integrated_Client_v2.1.exe`, `LAN_Install_Integrated_Server_v2.1.exe`)
 
 #### **`requirements.txt`** (148 bytes)
 - **Purpose**: Python dependency specification
@@ -124,13 +114,7 @@
   - `pywin32==311` - Windows API access
   - `winshell==0.6` - Windows shell integration
 
-#### **`auto_setup_received_files.py`** (3.4KB)
-- **Purpose**: Standalone utility for manual installer processing
-- **Key Features**:
-  - **Manual trigger** for installer processing
-  - **Continuous monitoring** mode
-  - **Status reporting** with emoji feedback
-  - **User-friendly CLI interface**
+---
 
 ---
 
