@@ -402,7 +402,7 @@ class ServerController:
             self.ui.overall_status.setText(status_text)
             self.ui.overall_status.setStyleSheet(f"color: {SCAN_SAFE}")
             if hasattr(self.ui, 'send_status'):
-                self.ui.send_status.setText("Transfer in progress...")
+                self.ui.send_status.setText("Transfer...")
             # Re-enable scan button
             if hasattr(self.ui, 'scan_files_button'):
                 self.ui.scan_files_button.setEnabled(True)
