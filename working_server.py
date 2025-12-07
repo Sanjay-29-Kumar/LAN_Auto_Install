@@ -1,16 +1,12 @@
 import sys
 import os
 
-# Add the project root directory to Python path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-import os
-import sys
-
-# Add the project root directory to Python path
-current_dir = os.path.dirname(os.path.abspath(__file__))
-if current_dir not in sys.path:
-    sys.path.append(current_dir)
+# Ensure the project root directory is first on Python path so absolute imports
+# like `utils.*`, `network.*` and `ui.*` resolve when running this script.
+project_root = os.path.dirname(os.path.abspath(__file__))
+if project_root not in sys.path:
+    # insert at front to take precedence over other paths
+    sys.path.insert(0, project_root)
 
 from ui.server_ui import (
     ServerWindow, FG_MUTED, SCAN_PENDING, SCAN_SAFE, SCAN_UNSAFE
