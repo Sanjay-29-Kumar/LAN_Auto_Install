@@ -1,4 +1,4 @@
-# Final LAN Auto Install System v2.1 - Project Structure
+# Final LAN Auto Install System  NovaNet v2.1 - Project Structure
 
 ## 🎯 **FINAL INTEGRATED SYSTEM**
 
